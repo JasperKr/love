@@ -26,6 +26,7 @@
 #include "Texture.h"
 #include "ShaderStage.h"
 #include "Resource.h"
+#include "Buffer.h"
 
 // STL
 #include <string>
@@ -50,7 +51,6 @@ public:
 
 	enum Language
 	{
-		LANGUAGE_GLSL1,
 		LANGUAGE_GLSL3,
 		LANGUAGE_GLSL4,
 		LANGUAGE_MAX_ENUM
@@ -184,7 +184,7 @@ public:
  	{
  		Matrix4 transformMatrix;
  		Matrix4 projectionMatrix;
- 		Vector4 normalMatrix[3]; // 3x3 matrix padded to an array of 3 vector4s.
+		Vector4 scaleParams;
 		Vector4 clipSpaceParams;
  		Colorf constantColor;
 
@@ -266,6 +266,11 @@ public:
 
 	void getLocalThreadgroupSize(int *x, int *y, int *z);
 
+	const std::vector<Buffer::DataDeclaration> *getBufferFormat(const std::string &name) const;
+
+	bool isUsingDeprecatedTextureFunctions() const;
+	bool isUsingDeprecatedTextureUniform() const;
+
 	static SourceInfo getSourceInfo(const std::string &src);
 	static std::string createShaderStageCode(Graphics *gfx, ShaderStageType stage, const std::string &code, const CompileOptions &options, const SourceInfo &info, bool gles, bool checksystemfeatures);
 
@@ -295,6 +300,8 @@ protected:
 		std::map<std::string, UniformInfo *> allUniforms;
 
 		std::map<std::string, std::vector<LocalUniformValue>> localUniformInitializerValues;
+
+		std::map<std::string, std::vector<Buffer::DataDeclaration>> bufferFormats;
 
 		int textureCount;
 		int bufferCount;
