@@ -435,6 +435,13 @@ static int w_Buffer_getDebugName(lua_State *L)
 	return 1;
 }
 
+static int w_Buffer_getHandle(lua_State* L)
+{
+	Buffer* t = luax_checkbuffer(L, 1);
+	lua_pushlightuserdata(L, (void*)t->getHandle());
+	return 1;
+}
+
 static const luaL_Reg w_Buffer_functions[] =
 {
 	{ "setArrayData", w_Buffer_setArrayData },
@@ -445,6 +452,7 @@ static const luaL_Reg w_Buffer_functions[] =
 	{ "getFormat", w_Buffer_getFormat },
 	{ "isBufferType", w_Buffer_isBufferType },
 	{ "getDebugName", w_Buffer_getDebugName },
+	{ "getHandle", w_Buffer_getHandle },
 	{ 0, 0 }
 };
 
