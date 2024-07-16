@@ -33,6 +33,7 @@
 
 #ifdef LOVE_MACOS
 // Needed for the GPU dynamic switching hack below.
+#define GL_SILENCE_DEPRECATION 1
 #import <Cocoa/Cocoa.h>
 #endif
 
@@ -850,7 +851,7 @@ id<MTLSamplerState> Graphics::getCachedSampler(const SamplerState &s)
 
 	// This isn't supported on some older iOS devices. Texture code checks for support.
 	if (s.depthSampleMode.hasValue)
-		desc.compareFunction = getMTLCompareFunction(s.depthSampleMode.value);
+		desc.compareFunction = getMTLCompareFunction(getReversedCompareMode(s.depthSampleMode.value));
 
 	id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:desc];
 
