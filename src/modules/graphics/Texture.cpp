@@ -287,6 +287,9 @@ Texture::Texture(Graphics *gfx, const Settings &settings, const Slices *slices)
 	if (isPixelFormatDepthStencil(format) && !renderTarget)
 		throw love::Exception("Depth or stencil pixel formats are only supported with render target textures.");
 
+	if (isPixelFormatDepthStencil(format) && texType == TEXTURE_VOLUME)
+		throw love::Exception("Volume texture types are not supported with depth or stencil pixel formats.");
+
 	for (PixelFormat viewformat : viewFormats)
 	{
 		if (getLinearPixelFormat(viewformat) == getLinearPixelFormat(format))
@@ -447,7 +450,7 @@ Texture::Texture(Graphics *gfx, Texture *base, const ViewSettings &viewsettings)
 
 Texture::~Texture()
 {
-	setGraphicsMemorySize(0);
+	updateGraphicsMemorySize(false);
 
 	if (this == rootView.texture)
 		--textureCount;
@@ -458,13 +461,34 @@ Texture::~Texture()
 		parentView.texture->release();
 }
 
-void Texture::setGraphicsMemorySize(int64 bytes)
+void Texture::updateGraphicsMemorySize(bool loaded)
 {
+	int64 memsize = 0;
+
+	if (loaded)
+	{
+		for (int mip = 0; mip < getMipmapCount(); mip++)
+		{
+			int w = getPixelWidth(mip);
+			int h = getPixelHeight(mip);
+			int slices = getDepth(mip) * layers * (texType == TEXTURE_CUBE ? 6 : 1);
+			memsize += getPixelFormatSliceSize(format, w, h) * slices;
+		}
+
+		if (getMSAA() > 1 && isReadable())
+		{
+			int slices = depth * layers * (texType == TEXTURE_CUBE ? 6 : 1);
+			memsize += getPixelFormatSliceSize(format, pixelWidth, pixelHeight) * slices * getMSAA();
+		}
+		else if (getMSAA() > 1)
+			memsize *= getMSAA();
+	}
+
 	totalGraphicsMemory = std::max(totalGraphicsMemory - graphicsMemorySize, (int64) 0);
 
-	bytes = std::max(bytes, (int64) 0);
-	graphicsMemorySize = bytes;
-	totalGraphicsMemory += bytes;
+	memsize = std::max(memsize, (int64) 0);
+	graphicsMemorySize = memsize;
+	totalGraphicsMemory += memsize;
 }
 
 void Texture::draw(Graphics *gfx, const Matrix4 &m)
