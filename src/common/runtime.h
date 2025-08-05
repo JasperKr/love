@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -200,6 +200,21 @@ inline float luax_tofloat(lua_State *L, int idx)
 inline float luax_checkfloat(lua_State *L, int idx)
 {
 	return static_cast<float>(luaL_checknumber(L, idx));
+}
+
+inline int luax_toint(lua_State *L, int idx)
+{
+	return (int)lua_tointeger(L, idx);
+}
+
+inline int luax_checkint(lua_State *L, int idx)
+{
+	return (int)luaL_checkinteger(L, idx);
+}
+
+inline int luax_optint(lua_State *L, int idx, int def)
+{
+	return (int)luaL_optinteger(L, idx, (lua_Integer)def);
 }
 
 inline lua_Number luax_checknumberclamped(lua_State *L, int idx, double minv, double maxv)

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -58,6 +58,7 @@ public:
 	static uint32_t getNumShaderSwitches();
 	static void resetShaderSwitches();
 
+	static const char *getErrorString(VkResult result);
 	static VkFormat getVulkanVertexFormat(DataFormat format);
 	static TextureFormat getTextureFormat(PixelFormat format);
 	static std::string getVendorName(uint32_t vendorId);
@@ -80,8 +81,8 @@ public:
 	static VkStencilOp getStencilOp(StencilAction);
 	static VkIndexType getVulkanIndexBufferType(IndexDataType type);
 
-	static void setImageLayoutTransitionOptions(
-		bool previous, bool renderTarget, bool depthStencil, VkImageLayout layout, VkAccessFlags &accessMask, VkPipelineStageFlags &stageFlags);
+	static void addImageLayoutTransitionOptions(
+		bool previous, bool renderTarget, bool depthStencil, VkImageLayout layout, VkAccessFlags& accessMask, VkPipelineStageFlags& stageFlags);
 
 	static void cmdTransitionImageLayout(
 		VkCommandBuffer, VkImage, PixelFormat format, bool renderTarget, VkImageLayout oldLayout, VkImageLayout newLayout,

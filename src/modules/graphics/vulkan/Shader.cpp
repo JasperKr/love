@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -37,6 +37,129 @@ namespace vulkan
 {
 
 static const uint32_t DESCRIPTOR_POOL_SIZE = 1000;
+
+SharedDescriptorPools::SharedDescriptorPools(VkDevice device, int dynamicUniformBuffers, int sampledTextures, int storageTextures, int texelBuffers, int storageBuffers)
+	: device(device)
+	, dynamicUniformBuffers(dynamicUniformBuffers)
+	, sampledTextures(sampledTextures)
+	, storageTextures(storageTextures)
+	, texelBuffers(texelBuffers)
+	, storageBuffers(storageBuffers)
+{
+	VkDescriptorPoolSize size{};
+
+	if (dynamicUniformBuffers > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+		size.descriptorCount = dynamicUniformBuffers;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (sampledTextures > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		size.descriptorCount = sampledTextures;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (storageTextures > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		size.descriptorCount = storageTextures;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (texelBuffers > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+		size.descriptorCount = texelBuffers;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (storageBuffers > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		size.descriptorCount = storageBuffers;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	pools.resize(MAX_FRAMES_IN_FLIGHT);
+}
+
+SharedDescriptorPools::~SharedDescriptorPools()
+{
+	auto vgfx = (Graphics *)Module::getInstance<Graphics>(Module::M_GRAPHICS);
+	if (vgfx == nullptr)
+		return;
+
+	vgfx->queueCleanUp([device = device, descriptorPools = pools]()
+	{
+		for (const auto &pools : descriptorPools)
+		{
+			for (const auto pool : pools)
+				vkDestroyDescriptorPool(device, pool, nullptr);
+		}
+	});
+}
+
+void SharedDescriptorPools::newFrame(uint64 frameIndex)
+{
+	if (!lastFrameIndex.hasValue || lastFrameIndex.value != frameIndex)
+	{
+		lastFrameIndex.set(frameIndex);
+		currentFrame = (size_t)((currentFrame + 1) % MAX_FRAMES_IN_FLIGHT);
+		currentPool = 0;
+		for (VkDescriptorPool pool : pools[currentFrame])
+			vkResetDescriptorPool(device, pool, 0);
+	}
+}
+
+void SharedDescriptorPools::createDescriptorPool()
+{
+	VkDescriptorPoolCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	createInfo.maxSets = DESCRIPTOR_POOL_SIZE;
+	createInfo.poolSizeCount = static_cast<uint32_t>(descriptorPoolSizes.size());
+	createInfo.pPoolSizes = descriptorPoolSizes.data();
+
+	VkDescriptorPool pool;
+	VkResult result = vkCreateDescriptorPool(device, &createInfo, nullptr, &pool);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan descriptor pool: %s", Vulkan::getErrorString(result));
+
+	pools[currentFrame].push_back(pool);
+}
+
+VkDescriptorSet SharedDescriptorPools::allocateDescriptorSet(const VkDescriptorSetLayout &descriptorSetLayout)
+{
+	if (pools[currentFrame].empty())
+		createDescriptorPool();
+
+	while (true)
+	{
+		VkDescriptorSetAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = pools[currentFrame][currentPool];
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = &descriptorSetLayout;
+
+		VkDescriptorSet descriptorSet;
+		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
+
+		switch (result)
+		{
+		case VK_SUCCESS:
+			return descriptorSet;
+		case VK_ERROR_OUT_OF_POOL_MEMORY:
+			currentPool++;
+			if (pools[currentFrame].size() <= currentPool)
+				createDescriptorPool();
+			continue;
+		default:
+			throw love::Exception("Failed to allocate Vulkan descriptor set: %s", Vulkan::getErrorString(result));
+		}
+	}
+}
 
 class BindingMapper
 {
@@ -125,7 +248,7 @@ static VkShaderStageFlagBits getStageBit(ShaderStageType type)
 	case SHADERSTAGE_COMPUTE:
 		return VK_SHADER_STAGE_COMPUTE_BIT;
 	default:
-		throw love::Exception("invalid type");
+		throw love::Exception("Invalid shader stage type: %d", type);
 	}
 }
 
@@ -152,7 +275,7 @@ static EShLanguage getGlslShaderType(ShaderStageType stage)
 	case SHADERSTAGE_COMPUTE:
 		return EShLangCompute;
 	default:
-		throw love::Exception("unkonwn shader stage type");
+		throw love::Exception("Unknown shader stage type: %d", stage);
 	}
 }
 
@@ -187,10 +310,8 @@ bool Shader::loadVolatile()
 	compileShaders();
 	createDescriptorSetLayout();
 	createPipelineLayout();
-	createDescriptorPoolSizes();
-	descriptorPools.resize(MAX_FRAMES_IN_FLIGHT);
-	currentFrame = 0;
-	newFrame();
+	acquireDescriptorPools();
+	newFrame(vgfx->getRealFrameIndex());
 
 	return true;
 }
@@ -200,14 +321,12 @@ void Shader::unloadVolatile()
 	if (shaderModules.empty())
 		return;
 
+	vgfx->releaseDescriptorPools(descriptorPools);
+	descriptorPools = nullptr;
+
 	vgfx->queueCleanUp([shaderModules = std::move(shaderModules), device = device, descriptorSetLayout = descriptorSetLayout, pipelineLayout = pipelineLayout,
-		descriptorPools = descriptorPools, computePipeline = computePipeline,
+		computePipeline = computePipeline,
 		graphicsPipelinesCore = std::move(graphicsPipelinesDynamicState), graphicsPipelinesFull = std::move(graphicsPipelinesNoDynamicState)]() {
-		for (const auto &pools : descriptorPools)
-		{
-			for (const auto pool : pools)
-				vkDestroyDescriptorPool(device, pool, nullptr);
-		}
 		for (const auto shaderModule : shaderModules)
 			vkDestroyShaderModule(device, shaderModule, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -222,7 +341,6 @@ void Shader::unloadVolatile()
 
 	shaderModules.clear();
 	shaderStages.clear();
-	descriptorPools.clear();
 }
 
 const std::vector<VkPipelineShaderStageCreateInfo> &Shader::getShaderStages() const
@@ -240,16 +358,12 @@ VkPipeline Shader::getComputePipeline() const
 	return computePipeline;
 }
 
-void Shader::newFrame()
+void Shader::newFrame(uint64 graphicsFrameIndex)
 {
-	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-
-	currentDescriptorPool = 0;
 	currentDescriptorSet = VK_NULL_HANDLE;
 	resourceDescriptorsDirty = true;
 
-	for (VkDescriptorPool pool : descriptorPools[currentFrame])
-		vkResetDescriptorPool(device, pool, 0);
+	descriptorPools->newFrame(graphicsFrameIndex);
 }
 
 void Shader::cmdPushDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint)
@@ -309,7 +423,7 @@ void Shader::cmdPushDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBind
 
 	if (resourceDescriptorsDirty || currentDescriptorSet == VK_NULL_HANDLE)
 	{
-		currentDescriptorSet = allocateDescriptorSet();
+		currentDescriptorSet = descriptorPools->allocateDescriptorSet(descriptorSetLayout);
 
 		for (auto &write : descriptorWrites)
 			write.dstSet = currentDescriptorSet;
@@ -467,6 +581,10 @@ void Shader::compileShaders()
 
 	const auto &enabledExtensions = vgfx->getEnabledOptionalDeviceExtensions();
 
+	uint32 glslangOpts = EShMsgDefault;
+	if (isDebugEnabled())
+		glslangOpts |= EShMsgDebugInfo;
+
 	for (int i = 0; i < SHADERSTAGE_MAX_ENUM; i++)
 	{
 		if (!stages[i])
@@ -502,7 +620,7 @@ void Shader::compileShaders()
 		bool forceDefault = false;
 		bool forwardCompat = true;
 
-		if (!tshader->parse(GetResources(), defaultVersion, defaultProfile, forceDefault, forwardCompat, EShMsgSuppressWarnings))
+		if (!tshader->parse(GetResources(), defaultVersion, defaultProfile, forceDefault, forwardCompat, (EShMessages)(glslangOpts | EShMsgSuppressWarnings)))
 		{
 			const char *stageName = "unknown";
 			ShaderStage::getConstant(stage, stageName);
@@ -518,7 +636,7 @@ void Shader::compileShaders()
 		glslangShaders.push_back(std::move(tshader));
 	}
 
-	if (!program->link(EShMsgDefault))
+	if (!program->link((EShMessages)(glslangOpts | EShMsgLinkTimeOptimization)))
 		throw love::Exception("link failed! %s\n", program->getInfoLog());
 
 	if (!program->mapIO())
@@ -540,6 +658,13 @@ void Shader::compileShaders()
 		spv::SpvBuildLogger logger;
 		glslang::SpvOptions opt;
 		opt.validate = true;
+
+		if (isDebugEnabled())
+		{
+			opt.generateDebugInfo = true;
+			opt.emitNonSemanticShaderDebugInfo = true;
+			opt.emitNonSemanticShaderDebugSource = true;
+		}
 
 		std::vector<uint32> spirv;
 
@@ -708,8 +833,9 @@ void Shader::compileShaders()
 
 		VkShaderModule shaderModule;
 
-		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)
-			throw love::Exception("failed to create shader module");
+		VkResult result = vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule);
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan shader module: %s", Vulkan::getErrorString(result));
 
 		std::string debugname = getShaderStageDebugName(shaderStage);
 		if (!debugname.empty() && vgfx->getEnabledOptionalInstanceExtensions().debugInfo)
@@ -963,8 +1089,9 @@ void Shader::createDescriptorSetLayout()
 	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
 
-	if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
-		throw love::Exception("failed to create descriptor set layout");
+	VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan descriptor set layout: %s", Vulkan::getErrorString(result));
 }
 
 void Shader::createPipelineLayout()
@@ -975,8 +1102,9 @@ void Shader::createPipelineLayout()
 	pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
 	pipelineLayoutInfo.pushConstantRangeCount = 0;
 
-	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
-		throw love::Exception("failed to create pipeline layout");
+	VkResult result = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan pipeline layout: %s", Vulkan::getErrorString(result));
 
 	if (isCompute)
 	{
@@ -987,36 +1115,35 @@ void Shader::createPipelineLayout()
 		computeInfo.stage = shaderStages.at(0);
 		computeInfo.layout = pipelineLayout;
 
-		if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &computePipeline) != VK_SUCCESS)
-			throw love::Exception("failed to create compute pipeline");
+		result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &computePipeline);
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan compute pipeline: %s", Vulkan::getErrorString(result));
 	}
 }
 
-void Shader::createDescriptorPoolSizes()
+static int getDescriptorPoolSize(const std::map<std::string, Shader::UniformInfo> &uniforms)
 {
+	int size = 0;
+	for (const auto &entry : uniforms)
+	{
+		if (entry.second.active)
+			size += entry.second.count;
+	}
+	return size;
+}
+
+void Shader::acquireDescriptorPools()
+{
+	int dynamicUniformBuffers = 0;
 	if (!localUniformData.empty())
-	{
-		VkDescriptorPoolSize size{};
-		size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		size.descriptorCount = 1;
+		dynamicUniformBuffers++;
 
-		descriptorPoolSizes.push_back(size);
-	}
+	int sampledTextures = getDescriptorPoolSize(reflection.sampledTextures);
+	int storageTextures = getDescriptorPoolSize(reflection.storageTextures);
+	int texelBuffers = getDescriptorPoolSize(reflection.texelBuffers);
+	int storageBuffers = getDescriptorPoolSize(reflection.storageBuffers);
 
-	for (const auto &entry : reflection.allUniforms)
-	{
-		if (!entry.second->active)
-			continue;
-
-		VkDescriptorPoolSize size{};
-		auto type = Vulkan::getDescriptorType(entry.second->baseType);
-		if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
-			continue;
-
-		size.type = type;
-		size.descriptorCount = entry.second->count;
-		descriptorPoolSizes.push_back(size);
-	}
+	descriptorPools = vgfx->acquireDescriptorPools(dynamicUniformBuffers, sampledTextures, storageTextures, texelBuffers, storageBuffers);
 }
 
 void Shader::setMainTex(graphics::Texture *texture)
@@ -1044,7 +1171,7 @@ void Shader::setTextureDescriptor(const UniformInfo *info, love::graphics::Textu
 
 	// Samplers may change after this call, so they're set just before the
 	// descriptor set is used instead of here.
-	VkImageView view = vkTexture != nullptr ? (VkImageView)vkTexture->getRenderTargetHandle() : VK_NULL_HANDLE;
+	VkImageView view = vkTexture != nullptr ? (VkImageView)vkTexture->getHandle() : VK_NULL_HANDLE;
 	if (view != imageInfo.imageView)
 	{
 		imageInfo.imageLayout = vkTexture != nullptr ? vkTexture->getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1077,52 +1204,6 @@ void Shader::setBufferDescriptor(const UniformInfo *info, love::graphics::Buffer
 		{
 			descriptorBufferViews[info->bindingStartIndex + index] = view;
 			resourceDescriptorsDirty = true;
-		}
-	}
-}
-
-void Shader::createDescriptorPool()
-{
-	VkDescriptorPoolCreateInfo createInfo{};
-	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	createInfo.maxSets = DESCRIPTOR_POOL_SIZE;
-	createInfo.poolSizeCount = static_cast<uint32_t>(descriptorPoolSizes.size());
-	createInfo.pPoolSizes = descriptorPoolSizes.data();
-
-	VkDescriptorPool pool;
-	if (vkCreateDescriptorPool(device, &createInfo, nullptr, &pool) != VK_SUCCESS)
-		throw love::Exception("failed to create descriptor pool");
-
-	descriptorPools[currentFrame].push_back(pool);
-}
-
-VkDescriptorSet Shader::allocateDescriptorSet()
-{
-	if (descriptorPools[currentFrame].empty())
-		createDescriptorPool();
-
-	while (true)
-	{
-		VkDescriptorSetAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = descriptorPools[currentFrame][currentDescriptorPool];
-		allocInfo.descriptorSetCount = 1;
-		allocInfo.pSetLayouts = &descriptorSetLayout;
-
-		VkDescriptorSet descriptorSet;
-		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
-
-		switch (result)
-		{
-		case VK_SUCCESS:
-			return descriptorSet;
-		case VK_ERROR_OUT_OF_POOL_MEMORY:
-			currentDescriptorPool++;
-			if (descriptorPools[currentFrame].size() <= currentDescriptorPool)
-				createDescriptorPool();
-			continue;
-		default:
-			throw love::Exception("failed to allocate descriptor set");
 		}
 	}
 }

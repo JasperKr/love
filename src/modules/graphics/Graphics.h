@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -108,6 +108,9 @@ bool isDebugEnabled();
 const std::vector<Renderer> &getDefaultRenderers();
 const std::vector<Renderer> &getRenderers();
 void setRenderers(const std::vector<Renderer> &renderers);
+
+void setLowPowerPreferred(bool preferred);
+bool isLowPowerPreferred();
 
 class Graphics : public Module
 {

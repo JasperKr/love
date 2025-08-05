@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -106,7 +106,7 @@ Buffer::Buffer(Graphics *gfx, const Settings &settings, const std::vector<DataDe
 			if (info.baseType == DATA_BASETYPE_BOOL)
 				throw love::Exception("Bool types are not supported in vertex buffers.");
 
-			if (decl.bindingLocation < 0 || decl.bindingLocation >= VertexAttributes::MAX)
+			if (decl.bindingLocation < 0 || decl.bindingLocation >= (int) VertexAttributes::MAX)
 			{
 				if (decl.bindingLocation == -1 && !decl.name.empty())
 					legacyVertexBindings = true;
@@ -344,6 +344,8 @@ std::vector<Buffer::DataDeclaration> Buffer::getCommonFormatDeclaration(CommonFo
 			{ getConstant(ATTRIB_TEXCOORD), DATAFORMAT_FLOAT_VEC2, 0, ATTRIB_TEXCOORD },
 			{ getConstant(ATTRIB_COLOR), DATAFORMAT_UNORM8_VEC4, 0, ATTRIB_COLOR },
 		};
+	case CommonFormat::COUNT:
+		return {};
 	}
 
 	return {};

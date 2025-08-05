@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -33,7 +33,7 @@ File::~File()
 
 FileData *File::read()
 {
-	return read(getSize());
+	return read(SIZE_ALL);
 }
 
 FileData *File::read(int64 size)
@@ -46,7 +46,9 @@ FileData *File::read(int64 size)
 	int64 max = getSize();
 	int64 cur = tell();
 
-	if (size < 0)
+	if (size == SIZE_ALL)
+		size = max;
+	else if (size < 0)
 		throw love::Exception("Invalid read size.");
 
 	// Clamping because the file offset may be in a weird position.

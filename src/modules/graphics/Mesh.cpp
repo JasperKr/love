@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -227,7 +227,7 @@ void Mesh::finalizeAttribute(BufferAttribute &attrib) const
 			attrib.bindingLocation = (int)builtinattrib;
 	}
 
-	if (attrib.bindingLocation >= VertexAttributes::MAX || (attrib.bindingLocation < 0 && attrib.name.empty()))
+	if (attrib.bindingLocation >= (int) VertexAttributes::MAX || (attrib.bindingLocation < 0 && attrib.name.empty()))
 		throw love::Exception("Vertex attributes must have a valid binding location value within [0, %d).", VertexAttributes::MAX);
 }
 

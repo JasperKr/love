@@ -1,5 +1,5 @@
 /**
-* Copyright (c) 2006-2024 LOVE Development Team
+* Copyright (c) 2006-2025 LOVE Development Team
 *
 * This software is provided 'as-is', without any express or implied
 * warranty.  In no event will the authors be held liable for any damages
@@ -507,8 +507,12 @@ std::vector<Font::DrawCommand> Font::generateVerticesFormatted(const love::font:
 				auto start = text.cps.begin() + range.getOffset();
 				auto end = start + range.getSize();
 				float numspaces = std::count(start, end, ' ');
+
+				if (text.cps[range.last] == ' ')
+					--numspaces;
+
 				if (width < wrap && numspaces >= 1)
-					extraspacing = floorf((wrap - width) / numspaces);
+					extraspacing = (wrap - width) / numspaces;
 				else
 					extraspacing = 0.0f;
 				break;

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -256,6 +256,8 @@ void SpriteBatch::setBufferSize(int newsize)
 
 	size = newsize;
 	next = new_next;
+
+	attributesID.invalidate();
 }
 
 int SpriteBatch::getBufferSize() const
@@ -293,8 +295,7 @@ void SpriteBatch::attachAttribute(const std::string &name, Buffer *buffer, Mesh 
 
 	attached_attributes[name] = newattrib;
 
-	// Invalidate attributes ID.
-	attributesID = VertexAttributesID();
+	attributesID.invalidate();
 }
 
 void SpriteBatch::setDrawRange(int start, int count)

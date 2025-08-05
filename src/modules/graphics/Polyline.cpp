@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -100,7 +100,7 @@ void Polyline::render(const Vector2 *coords, size_t count, size_t size_hint, flo
 	}
 
 	// Add the degenerate triangle strip.
-	if (extra_vertices)
+	if (extra_vertices && vertex_count > 0)
 	{
 		vertices[vertex_count + 0] = vertices[vertex_count - 1];
 		vertices[vertex_count + 1] = vertices[overdraw_vertex_start];

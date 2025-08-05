@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -65,7 +65,8 @@ void TextBatch::uploadVertices(const std::vector<Font::GlyphVertex> &vertices, s
 
 		Buffer::Settings settings(BUFFERUSAGEFLAG_VERTEX, BUFFERDATAUSAGE_DYNAMIC);
 		auto decl = Buffer::getCommonFormatDeclaration(Font::vertexFormat);
-		Buffer *newbuffer = gfx->newBuffer(settings, decl, nullptr, newsize, 0);
+
+		StrongRef<Buffer> newbuffer(gfx->newBuffer(settings, decl, nullptr, newsize, 0), Acquire::NORETAIN);
 
 		void *newdata = nullptr;
 		if (vertexData != nullptr)

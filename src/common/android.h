@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -50,14 +50,7 @@ double getScreenScale();
  **/
 bool getSafeArea(int &top, int &left, int &bottom, int &right);
 
-bool openURL(const std::string &url);
-
 void vibrate(double seconds);
-
-/*
- * Helper functions for the filesystem module
- */
-void freeGameArchiveMemory(void *ptr);
 
 bool directoryExists(const char *path);
 
@@ -101,25 +94,11 @@ bool checkFusedGame(void **physfsIO_Out);
 const char *getCRequirePath();
 
 /**
- * Convert "content://" to file descriptor.
+ * Convert "content://" to PHYSFS_Io using SDL_IOStream.
  * @param path Path with content:// URI
- * @return File descriptor if successful, -1 on failure.
- */
-int getFDFromContentProtocol(const char *path);
-
-/**
- * Attempt to parse "(/)love2d://fd/<fd>" from path.
- * @param path Potentially special path.
- * @return File descriptor passed if successful, -1 if path is not valid.
- */
-int getFDFromLoveProtocol(const char *path);
-
-/**
- * Create PHYSFS_Io from file descriptor.
- * @param fd File descriptor
  * @return PHYSFS_Io casted to void*.
  */
-void *getIOFromFD(int fd);
+void *getIOFromContentProtocol(const char *path);
 
 /**
  * Retrieve PHYSFS_AndroidInit structure.

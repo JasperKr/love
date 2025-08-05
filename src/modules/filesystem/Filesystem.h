@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -173,6 +173,8 @@ public:
 	 **/
 	virtual File *openFile(const char *filename, File::Mode mode) const = 0;
 
+	File *openNativeFile(const char *path, File::Mode mode) const;
+
 	/**
 	 * Creates a new FileData object. Data will be copied.
 	 * @param data Pointer to the data.
@@ -328,7 +330,7 @@ private:
 	bool getRealPathType(const std::string &path, FileType &ftype) const;
 
 	// Should we save external or internal for Android
-	bool useExternal;
+	bool useExternal = false;
 
 }; // Filesystem
 

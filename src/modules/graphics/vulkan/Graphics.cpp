@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -29,8 +29,8 @@
 #include "Shader.h"
 #include "Vulkan.h"
 
-#include <SDL_version.h>
-#include <SDL_vulkan.h>
+#include <SDL3/SDL_vulkan.h>
+#include <SDL3/SDL_hints.h>
 
 #include <algorithm>
 #include <vector>
@@ -59,8 +59,6 @@ static const std::vector<const char*> validationLayers = {
 static const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
-
-constexpr uint32_t USAGES_POLL_INTERVAL = 5000;
 
 constexpr int DEFAULT_VERTEX_BUFFER_BINDING = 0;
 constexpr int VERTEX_BUFFER_BINDING_START = 1;
@@ -97,13 +95,16 @@ static void checkOptionalInstanceExtensions(OptionalInstanceExtensions& ext)
 Graphics::Graphics()
 	: love::graphics::Graphics("love.graphics.vulkan")
 {
-	if (SDL_Vulkan_LoadLibrary(nullptr))
+	if (!SDL_Vulkan_LoadLibrary(nullptr))
 		throw love::Exception("could not find vulkan");
 
 	volkInitializeCustom((PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr());
 
 	if (isDebugEnabled() && !checkValidationSupport())
+	{
+		SDL_Vulkan_UnloadLibrary();
 		throw love::Exception("validation layers requested, but not available");
+	}
 
 	VkApplicationInfo appInfo{};
 	appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -120,19 +121,15 @@ Graphics::Graphics()
 
 	// GetInstanceExtensions works with a null window parameter as long as
 	// SDL_Vulkan_LoadLibrary has been called (which we do earlier).
-	unsigned int count;
-#if SDL_VERSION_ATLEAST(3, 0, 0)
+	unsigned int count = 0;
 	char const* const* extensions_string = SDL_Vulkan_GetInstanceExtensions(&count);
 	if (extensions_string == nullptr)
+	{
+		SDL_Vulkan_UnloadLibrary();
 		throw love::Exception("couldn't retrieve sdl vulkan extensions");
+	}
 
 	std::vector<const char*> extensions(extensions_string, extensions_string + count);
-#else
-	if (SDL_Vulkan_GetInstanceExtensions(nullptr, &count, nullptr) != SDL_TRUE)
-		throw love::Exception("couldn't retrieve sdl vulkan extensions");
-
-	std::vector<const char*> extensions = {};
-#endif
 
 	checkOptionalInstanceExtensions(optionalInstanceExtensions);
 
@@ -140,14 +137,6 @@ Graphics::Graphics()
 		extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 	if (optionalInstanceExtensions.debugInfo)
 		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-
-#if !SDL_VERSION_ATLEAST(3, 0, 0)
-	size_t additional_extension_count = extensions.size();
-	extensions.resize(additional_extension_count + count);
-
-	if (SDL_Vulkan_GetInstanceExtensions(nullptr, &count, extensions.data() + additional_extension_count) != SDL_TRUE)
-		throw love::Exception("couldn't retrieve sdl vulkan extensions");
-#endif
 
 	createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
 	createInfo.ppEnabledExtensionNames = extensions.data();
@@ -159,9 +148,38 @@ Graphics::Graphics()
 	}
 
 	if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS)
+	{
+		SDL_Vulkan_UnloadLibrary();
 		throw love::Exception("couldn't create vulkan instance");
+	}
 
 	volkLoadInstance(instance);
+
+	uint32_t deviceCount = 0;
+	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+
+	int maxScore = 0;
+
+	if (deviceCount > 0)
+	{
+		std::vector<VkPhysicalDevice> devices(deviceCount);
+		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+		// This is imperfect because we can't query a swap chain at this point.
+		// In theory it could cause a device to have a non-zero score here and
+		// no devices to have a non-zero score later in setMode, but hopefully
+		// that won't happen in practice...
+		for (const auto &device : devices)
+			maxScore = std::max(maxScore, rateDeviceSuitability(device, false));
+	}
+
+	// Exit here if there are no suitable devices, to let other backends take over.
+	if (maxScore == 0)
+	{
+		vkDestroyInstance(instance, nullptr);
+		SDL_Vulkan_UnloadLibrary();
+		throw love::Exception("no suitable vulkan physical devices found");
+	}
 }
 
 Graphics::~Graphics()
@@ -340,10 +358,10 @@ void Graphics::submitGpuCommands(SubmitMode submitMode, void *screenshotCallback
 	VmaAllocation screenshotAllocation = VK_NULL_HANDLE;
 	VmaAllocationInfo screenshotAllocationInfo = {};
 
-	VkImage backbufferImage = fakeBackbuffer != nullptr ? (VkImage)fakeBackbuffer->getHandle() : swapChainImages.at(imageIndex);
-
 	if (submitMode == SUBMIT_PRESENT)
 	{
+		VkImage backbufferImage = fakeBackbuffer != nullptr ? (VkImage)fakeBackbuffer->getRenderTargetHandle() : swapChainImages.at(imageIndex);
+
 		if (pendingScreenshotCallbacks.empty())
 		{
 			if (fakeBackbuffer == nullptr)
@@ -593,8 +611,8 @@ void Graphics::present(void *screenshotCallbackdata)
 	updatePendingReadbacks();
 	updateTemporaryResources();
 
-	frameCounter++;
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	realFrameIndex++;
 
 	beginFrame();
 }
@@ -619,6 +637,17 @@ void Graphics::backbufferChanged(int width, int height, int pixelwidth, int pixe
 
 	if (swapChain != VK_NULL_HANDLE)
 		msaaSamples = getMsaaCount(requestedMsaa);
+
+	// Don't wait until the next frame starts to recreate the swapchain - doing so
+	// will cause a 1 frame delay in the backbuffer size on resize, and it can cause
+	// MSAA state to get out of sync for a frame.
+	if (swapChainRecreationRequested)
+	{
+		swapChainRecreationRequested = false;
+		submitGpuCommands(SUBMIT_NOPRESENT);
+		recreateSwapChain();
+		beginSwapChainFrame();
+	}
 }
 
 bool Graphics::setMode(void *context, int width, int height, int pixelwidth, int pixelheight, bool backbufferstencil, bool backbufferdepth, int msaa)
@@ -719,7 +748,6 @@ bool Graphics::setMode(void *context, int width, int height, int pixelwidth, int
 		createQuadIndexBuffer();
 		createFanIndexBuffer();
 
-		frameCounter = 0;
 		currentFrame = 0;
 	}
 
@@ -782,12 +810,18 @@ void Graphics::getAPIStats(int &shaderswitches) const
 
 void Graphics::unSetMode()
 {
-	submitGpuCommands(SUBMIT_NOPRESENT);
+	if (created)
+		submitGpuCommands(SUBMIT_NOPRESENT);
 
 	created = false;
 
-	cleanupSwapChain();
-	vkDestroySurfaceKHR(instance, surface, nullptr);
+	cleanupSwapChain(true);
+
+	if (surface != VK_NULL_HANDLE)
+	{
+		vkDestroySurfaceKHR(instance, surface, nullptr);
+		surface = VK_NULL_HANDLE;
+	}
 }
 
 void Graphics::setActive(bool enable)
@@ -1208,13 +1242,8 @@ static bool computeDispatchBarrierFlags(Shader *shader, VkAccessFlags &dstAccess
 
 		// All writable images use the GENERAL layout.
 		// TODO: this is pretty messy.
-		VkAccessFlags texAccessFlags = 0;
-		VkPipelineStageFlags texStageFlags = 0;
 		bool depthStencil  = isPixelFormatDepthStencil(tex->getPixelFormat());
-		Vulkan::setImageLayoutTransitionOptions(false, tex->isRenderTarget(), depthStencil, VK_IMAGE_LAYOUT_GENERAL, texAccessFlags, texStageFlags);
-		
-		dstAccessFlags |= texAccessFlags;
-		dstStageFlags |= texStageFlags;
+		Vulkan::addImageLayoutTransitionOptions(false, tex->isRenderTarget(), depthStencil, VK_IMAGE_LAYOUT_GENERAL, dstAccessFlags, dstStageFlags);
 	}
 
 	for (const auto &info : shader->getActiveStorageBufferInfo())
@@ -1300,7 +1329,7 @@ void Graphics::setRenderTargetsInternal(const RenderTargets &rts, int pixelw, in
 	if (isWindow)
 		setDefaultRenderPass();
 	else
-		setRenderPass(rts, pixelw, pixelh, hasSRGBtexture);
+		setRenderPass(rts, pixelw, pixelh);
 }
 
 // END IMPLEMENTATION OVERRIDDEN FUNCTIONS
@@ -1330,16 +1359,8 @@ void Graphics::initDynamicState()
 	}
 }
 
-void Graphics::beginFrame()
+void Graphics::beginSwapChainFrame()
 {
-	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-
-	if (frameCounter >= USAGES_POLL_INTERVAL)
-	{
-		cleanupUnusedObjects();
-		frameCounter = 0;
-	}
-
 	if (swapChain != VK_NULL_HANDLE)
 	{
 		while (true)
@@ -1362,14 +1383,6 @@ void Graphics::beginFrame()
 	{
 		imageRequested = false;
 	}
-
-	for (auto &readbackCallback : readbackCallbacks.at(currentFrame))
-		readbackCallback();
-	readbackCallbacks.at(currentFrame).clear();
-
-	for (auto &cleanUpFn : cleanUpFunctions.at(currentFrame))
-		cleanUpFn();
-	cleanUpFunctions.at(currentFrame).clear();
 
 	startRecordingGraphicsCommands();
 
@@ -1403,11 +1416,26 @@ void Graphics::beginFrame()
 
 		transitionColorDepthLayouts = false;
 	}
+}
+
+void Graphics::beginFrame()
+{
+	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+
+	for (auto &readbackCallback : readbackCallbacks.at(currentFrame))
+		readbackCallback();
+	readbackCallbacks.at(currentFrame).clear();
+
+	for (auto &cleanUpFn : cleanUpFunctions.at(currentFrame))
+		cleanUpFn();
+	cleanUpFunctions.at(currentFrame).clear();
+
+	beginSwapChainFrame();
 
 	Vulkan::resetShaderSwitches();
 
 	for (const auto &shader : usedShadersInFrame)
-		shader->newFrame();
+		shader->newFrame(realFrameIndex);
 	usedShadersInFrame.clear();
 
 	localUniformBuffer->nextFrame();
@@ -1420,8 +1448,9 @@ void Graphics::startRecordingGraphicsCommands()
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	beginInfo.pInheritanceInfo = nullptr;
 
-	if (vkBeginCommandBuffer(commandBuffers.at(currentFrame), &beginInfo) != VK_SUCCESS)
-		throw love::Exception("failed to begin recording command buffer");
+	VkResult result = vkBeginCommandBuffer(commandBuffers.at(currentFrame), &beginInfo);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to begin recording Vulkan command buffer: %s", Vulkan::getErrorString(result));
 
 	initDynamicState();
 
@@ -1439,7 +1468,10 @@ void Graphics::startRecordingGraphicsCommands()
 		fakeBackbuffer.set((Texture*)newTexture(settings, nullptr), Acquire::NORETAIN);
 	}
 
-	setDefaultRenderPass();
+	// Update the pending render pass state with current backbuffer data if no RT is active.
+	// If one is active, the state shouldn't need updating.
+	if (!isRenderTargetActive())
+		setDefaultRenderPass();
 
 	if (defaultVertexBuffer)
 	{
@@ -1454,8 +1486,9 @@ void Graphics::endRecordingGraphicsCommands()
 	if (renderPassState.active)
 		endRenderPass();
 
-	if (vkEndCommandBuffer(commandBuffers.at(currentFrame)) != VK_SUCCESS)
-		throw love::Exception("failed to record command buffer");
+	VkResult result = vkEndCommandBuffer(commandBuffers.at(currentFrame));
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to record Vulkan command buffer: %s", Vulkan::getErrorString(result));
 }
 
 VkCommandBuffer Graphics::getCommandBufferForDataTransfer()
@@ -1552,6 +1585,13 @@ bool Graphics::checkValidationSupport()
 
 void Graphics::pickPhysicalDevice()
 {
+	struct DeviceRating
+	{
+		VkPhysicalDevice device;
+		size_t deviceIndex;
+		int rating;
+	};
+
 	uint32_t deviceCount = 0;
 	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
 
@@ -1561,18 +1601,28 @@ void Graphics::pickPhysicalDevice()
 	std::vector<VkPhysicalDevice> devices(deviceCount);
 	vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-	std::multimap<int, VkPhysicalDevice> candidates;
+	std::vector<DeviceRating> candidates;
 
-	for (const auto &device : devices)
+	for (size_t i = 0; i < devices.size(); i++)
 	{
-		int score = rateDeviceSuitability(device);
-		candidates.insert(std::make_pair(score, device));
+		DeviceRating r = {};
+		r.device = devices[i];
+		r.deviceIndex = i;
+		r.rating = rateDeviceSuitability(devices[i], true);
+		candidates.push_back(r);
 	}
 
-	if (candidates.rbegin()->first > 0)
-		physicalDevice = candidates.rbegin()->second;
+	std::sort(candidates.begin(), candidates.end(), [](const DeviceRating &a, const DeviceRating &b) -> bool
+	{
+		if (a.rating != b.rating)
+			return a.rating > b.rating;
+		return a.deviceIndex < b.deviceIndex;
+	});
+
+	if (!candidates.empty() && candidates[0].rating > 0)
+		physicalDevice = candidates[0].device;
 	else
-		throw love::Exception("failed to find a suitable gpu");
+		throw love::Exception("Vulkan: failed to find a suitable GPU.");
 
 	VkPhysicalDeviceProperties properties;
 	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
@@ -1594,54 +1644,82 @@ void Graphics::pickPhysicalDevice()
 	}
 }
 
-bool Graphics::checkDeviceExtensionSupport(VkPhysicalDevice device)
-{
-	uint32_t extensionCount;
-	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
-
-	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
-
-	std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
-
-	for (const auto &extension : availableExtensions)
-		requiredExtensions.erase(extension.extensionName);
-
-	return requiredExtensions.empty();
-}
-
 // if the score is nonzero then the device is suitable.
 // A higher rating means generally better performance
 // if the score is 0 the device is unsuitable
-int Graphics::rateDeviceSuitability(VkPhysicalDevice device)
+int Graphics::rateDeviceSuitability(VkPhysicalDevice device, bool querySwapChain)
 {
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceFeatures deviceFeatures;
 	vkGetPhysicalDeviceProperties(device, &deviceProperties);
 	vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
 
-	int score = 1;
+	uint32_t extensionCount = 0;
+	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+
+	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
+
+	bool hasMSFTLayeredDriver = false;
+	for (const auto &extension : availableExtensions)
+	{
+		if (strcmp(extension.extensionName, VK_MSFT_LAYERED_DRIVER_EXTENSION_NAME) == 0)
+		{
+			hasMSFTLayeredDriver = true;
+			break;
+		}
+	}
+
+	VkPhysicalDeviceProperties2 deviceProperties2{};
+	deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+
+	VkPhysicalDeviceLayeredDriverPropertiesMSFT layeredDriverProperties{};
+	layeredDriverProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_DRIVER_PROPERTIES_MSFT;
+
+	if (deviceProperties.apiVersion >= VK_API_VERSION_1_1)
+	{
+		if (hasMSFTLayeredDriver)
+			deviceProperties2.pNext = &layeredDriverProperties;
+
+		vkGetPhysicalDeviceProperties2(device, &deviceProperties2);
+	}
+
+	int score = 2;
 
 	// optional
 
 	if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-		score += 1000;
+		score += isLowPowerPreferred() ? 100 : 1000;
 	if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
-		score += 100;
+		score += isLowPowerPreferred() ? 1000 : 100;
 	if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)
 		score += 10;
 
+	// Reduce the score if this is something like Vulkan-on-D3D12 rather than a native driver.
+	if (hasMSFTLayeredDriver && layeredDriverProperties.underlyingAPI != VK_LAYERED_DRIVER_UNDERLYING_API_NONE_MSFT)
+		score /= 2;
+
 	// definitely needed
 
+	if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU)
+	{
+		if (!SDL_GetHintBoolean("LOVE_GRAPHICS_VULKAN_ALLOW_SOFTWARE", false))
+			score = 0;
+	}
+
 	QueueFamilyIndices indices = findQueueFamilies(device);
-	if (!indices.isComplete())
+	if (!indices.isComplete() && (querySwapChain || !indices.graphicsFamily.hasValue))
 		score = 0;
 
-	bool extensionsSupported = checkDeviceExtensionSupport(device);
-	if (!extensionsSupported)
+	std::set<std::string> missingExtensions(deviceExtensions.begin(), deviceExtensions.end());
+
+	for (const auto &extension : availableExtensions)
+		missingExtensions.erase(extension.extensionName);
+
+	if (!missingExtensions.empty())
 		score = 0;
 
-	if (extensionsSupported)
+	if (missingExtensions.empty() && querySwapChain)
 	{
 		auto swapChainSupport = querySwapChainSupport(device);
 		bool swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
@@ -1674,11 +1752,14 @@ QueueFamilyIndices Graphics::findQueueFamilies(VkPhysicalDevice device)
 		if ((queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) && (queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT))
 			indices.graphicsFamily = i;
 
-		VkBool32 presentSupport = false;
-		vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+		if (surface != VK_NULL_HANDLE)
+		{
+			VkBool32 presentSupport = false;
+			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
 
-		if (presentSupport)
-			indices.presentFamily = i;
+			if (presentSupport)
+				indices.presentFamily = i;
+		}
 
 		if (indices.isComplete())
 			break;
@@ -1793,8 +1874,9 @@ void Graphics::createLogicalDevice()
 	if (optionalDeviceExtensions.extendedDynamicState)
 		createInfo.pNext = &extendedDynamicStateFeatures;
 
-	if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS)
-		throw love::Exception("failed to create logical device");
+	VkResult result = vkCreateDevice(physicalDevice, &createInfo, nullptr, &device);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan logical device: %s", Vulkan::getErrorString(result));
 
 	volkLoadDevice(device);
 
@@ -1807,8 +1889,9 @@ void Graphics::createPipelineCache()
 	VkPipelineCacheCreateInfo cacheInfo{};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
-	if (vkCreatePipelineCache(device, &cacheInfo, nullptr, &pipelineCache) != VK_SUCCESS)
-		throw love::Exception("could not create pipeline cache");
+	VkResult result = vkCreatePipelineCache(device, &cacheInfo, nullptr, &pipelineCache);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Could not create Vulkan pipeline cache: %s", Vulkan::getErrorString(result));
 }
 
 void Graphics::initVMA()
@@ -1861,21 +1944,17 @@ void Graphics::initVMA()
 	if (optionalDeviceExtensions.memoryBudget)
 		allocatorCreateInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 
-	if (vmaCreateAllocator(&allocatorCreateInfo, &vmaAllocator) != VK_SUCCESS)
-		throw love::Exception("failed to create vma allocator");
+	VkResult result = vmaCreateAllocator(&allocatorCreateInfo, &vmaAllocator);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan VMA allocator: %s", Vulkan::getErrorString(result));
 }
 
 void Graphics::createSurface()
 {
 	auto window = Module::getInstance<love::window::Window>(M_WINDOW);
 	const void *handle = window->getHandle();
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	if (SDL_Vulkan_CreateSurface((SDL_Window*)handle, instance, nullptr, &surface) != SDL_TRUE)
-		throw love::Exception("failed to create window surface");
-#else
-	if (SDL_Vulkan_CreateSurface((SDL_Window*)handle, instance, &surface) != SDL_TRUE)
-		throw love::Exception("failed to create window surface");
-#endif
+	if (!SDL_Vulkan_CreateSurface((SDL_Window*)handle, instance, nullptr, &surface))
+		throw love::Exception("Failed to create Vulkan window surface: %s", SDL_GetError());
 }
 
 SwapChainSupportDetails Graphics::querySwapChainSupport(VkPhysicalDevice device)
@@ -1950,10 +2029,21 @@ void Graphics::createSwapChain()
 		createInfo.compositeAlpha = chooseCompositeAlpha(swapChainSupport.capabilities);
 		createInfo.presentMode = presentMode;
 		createInfo.clipped = VK_TRUE;
-		createInfo.oldSwapchain = VK_NULL_HANDLE;
+		createInfo.oldSwapchain = swapChain;
 
-		if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain) != VK_SUCCESS)
-			throw love::Exception("failed to create swap chain");
+		VkSwapchainKHR newSwapChain = VK_NULL_HANDLE;
+		VkResult result = vkCreateSwapchainKHR(device, &createInfo, nullptr, &newSwapChain);
+
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan swap chain: %s", Vulkan::getErrorString(result));
+
+		if (swapChain != VK_NULL_HANDLE)
+		{
+			vkDestroySwapchainKHR(device, swapChain, nullptr);
+			swapChain = VK_NULL_HANDLE;
+		}
+
+		swapChain = newSwapChain;
 
 		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
 		swapChainImages.resize(imageCount);
@@ -1961,6 +2051,12 @@ void Graphics::createSwapChain()
 	}
 	else
 	{
+		if (swapChain != VK_NULL_HANDLE)
+		{
+			vkDestroySwapchainKHR(device, swapChain, nullptr);
+			swapChain = VK_NULL_HANDLE;
+		}
+
 		// Use a fake backbuffer. Creation is deferred until startRecordingGraphicsCommands
 		// because newTexture needs an active command buffer to do its initial
 		// layout transitions.
@@ -2125,8 +2221,9 @@ void Graphics::createImageViews()
 		createInfo.subresourceRange.baseArrayLayer = 0;
 		createInfo.subresourceRange.layerCount = 1;
 
-		if (vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews.at(i)) != VK_SUCCESS)
-			throw love::Exception("failed to create image views");
+		VkResult result = vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews.at(i));
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan swap chain image views: %s", Vulkan::getErrorString(result));
 	}
 }
 
@@ -2140,8 +2237,9 @@ VkFramebuffer Graphics::createFramebuffer(FramebufferConfiguration &configuratio
 	if (configuration.staticData.depthView)
 		attachments.push_back(configuration.staticData.depthView);
 
-	if (configuration.staticData.resolveView)
-		attachments.push_back(configuration.staticData.resolveView);
+	// Resolve attachments after everything else to match createRenderPass.
+	for (const auto &colorResolveView : configuration.colorResolveViews)
+		attachments.push_back(colorResolveView);
 
 	VkFramebufferCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -2153,8 +2251,9 @@ VkFramebuffer Graphics::createFramebuffer(FramebufferConfiguration &configuratio
 	createInfo.layers = 1;
 
 	VkFramebuffer frameBuffer;
-	if (vkCreateFramebuffer(device, &createInfo, nullptr, &frameBuffer) != VK_SUCCESS)
-		throw love::Exception("failed to create framebuffer");
+	VkResult result = vkCreateFramebuffer(device, &createInfo, nullptr, &frameBuffer);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan framebuffer: %s", Vulkan::getErrorString(result));
 	return frameBuffer;
 }
 
@@ -2174,6 +2273,54 @@ VkFramebuffer Graphics::getFramebuffer(FramebufferConfiguration &configuration)
 	framebufferUsages[framebuffer] = true;
 
 	return framebuffer;
+}
+
+void Graphics::cleanupFramebuffers(VkImageView imageView, PixelFormat format)
+{
+	bool depthstencil = isPixelFormatDepthStencil(format);
+
+	for (auto it = framebuffers.begin(); it != framebuffers.end();)
+	{
+		bool foundView = false;
+
+		if (depthstencil)
+		{
+			if (it->first.staticData.depthView == imageView)
+				foundView = true;
+		}
+		else
+		{
+			for (VkImageView view : it->first.colorViews)
+			{
+				if (view == imageView)
+				{
+					foundView = true;
+					break;
+				}
+			}
+			if (!foundView)
+			{
+				for (VkImageView view : it->first.colorResolveViews)
+				{
+					if (view == imageView)
+					{
+						foundView = true;
+						break;
+					}
+				}
+			}
+		}
+
+		if (foundView)
+		{
+			vkDestroyFramebuffer(device, it->second, nullptr);
+			it = framebuffers.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
 }
 
 void Graphics::createDefaultShaders()
@@ -2218,6 +2365,7 @@ VkRenderPass Graphics::createRenderPass(RenderPassConfiguration &configuration)
 
 	std::vector<VkAttachmentDescription> attachments;
 	std::vector<VkAttachmentReference> colorAttachmentRefs;
+	std::vector<VkAttachmentReference> colorResolveAttachmentRefs;
 
 	uint32_t attachment = 0;
 	for (const auto &colorAttachment : configuration.colorAttachments)
@@ -2234,24 +2382,33 @@ VkRenderPass Graphics::createRenderPass(RenderPassConfiguration &configuration)
 		colorDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 		colorDescription.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		colorDescription.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		colorDescription.initialLayout = colorAttachment.layout;
-		colorDescription.finalLayout = colorAttachment.layout;
+		if (colorAttachment.msaaSamples > 1)
+		{
+			colorDescription.initialLayout = colorAttachment.msaaLayout;
+			colorDescription.finalLayout = colorAttachment.msaaLayout;
+		}
+		else
+		{
+			colorDescription.initialLayout = colorAttachment.layout;
+			colorDescription.finalLayout = colorAttachment.layout;
+		}
 		attachments.push_back(colorDescription);
 
-		VkAccessFlags texBeginAccessFlags = 0;
-		VkPipelineStageFlags texBeginStageFlags = 0;
-		Vulkan::setImageLayoutTransitionOptions(true, true, false, colorAttachment.layout, texBeginAccessFlags, texBeginStageFlags);
-		beginDependency.srcAccessMask |= texBeginAccessFlags;
-		beginDependency.srcStageMask |= texBeginStageFlags;
+		// I had a TODO here, but I don't remember why...
+		if (colorAttachment.layout != VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			Vulkan::addImageLayoutTransitionOptions(true, true, false, colorAttachment.layout, beginDependency.srcAccessMask, beginDependency.srcStageMask);
+			Vulkan::addImageLayoutTransitionOptions(false, true, false, colorAttachment.layout, endDependency.dstAccessMask, endDependency.dstStageMask);
+		}
 
-		VkAccessFlags texEndAccessFlags = 0;
-		VkPipelineStageFlags texEndStageFlags = 0;
-		Vulkan::setImageLayoutTransitionOptions(false, true, false, colorAttachment.layout, texEndAccessFlags, texEndStageFlags);
-		endDependency.dstAccessMask |= texEndAccessFlags;
-		endDependency.dstStageMask |= texEndStageFlags;
+		if (colorAttachment.msaaLayout != VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			Vulkan::addImageLayoutTransitionOptions(true, true, false, colorAttachment.msaaLayout, beginDependency.srcAccessMask, beginDependency.srcStageMask);
+			Vulkan::addImageLayoutTransitionOptions(false, true, false, colorAttachment.msaaLayout, endDependency.dstAccessMask, endDependency.dstStageMask);
+		}
 	}
 
-	subPass.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
+	subPass.colorAttachmentCount = static_cast<uint32_t>(configuration.colorAttachments.size());
 	subPass.pColorAttachments = colorAttachmentRefs.data();
 
 	VkAttachmentReference depthStencilAttachmentRef{};
@@ -2272,36 +2429,43 @@ VkRenderPass Graphics::createRenderPass(RenderPassConfiguration &configuration)
 		depthStencilAttachment.finalLayout = configuration.staticData.depthStencilAttachment.layout;
 		attachments.push_back(depthStencilAttachment);
 
-		VkAccessFlags texBeginAccessFlags = 0;
-		VkPipelineStageFlags texBeginStageFlags = 0;
-		Vulkan::setImageLayoutTransitionOptions(true, true, true, configuration.staticData.depthStencilAttachment.layout, texBeginAccessFlags, texBeginStageFlags);
-		beginDependency.srcAccessMask |= texBeginAccessFlags;
-		beginDependency.srcStageMask |= texBeginStageFlags;
-
-		VkAccessFlags texEndAccessFlags = 0;
-		VkPipelineStageFlags texEndStageFlags = 0;
-		Vulkan::setImageLayoutTransitionOptions(false, true, true, configuration.staticData.depthStencilAttachment.layout, texEndAccessFlags, texEndStageFlags);
-		endDependency.dstAccessMask |= texEndAccessFlags;
-		endDependency.dstStageMask |= texEndStageFlags;
+		Vulkan::addImageLayoutTransitionOptions(true, true, true, configuration.staticData.depthStencilAttachment.layout, beginDependency.srcAccessMask, beginDependency.srcStageMask);
+		Vulkan::addImageLayoutTransitionOptions(false, true, true, configuration.staticData.depthStencilAttachment.layout, endDependency.dstAccessMask, endDependency.dstStageMask);
 	}
 
-	VkAttachmentReference colorAttachmentResolveRef{};
+	// Add resolve attachments after everything else to make pClearValues simpler to implement.
 	if (configuration.staticData.resolve)
 	{
-		colorAttachmentResolveRef.attachment = attachment++;
-		colorAttachmentResolveRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		subPass.pResolveAttachments = &colorAttachmentResolveRef;
+		for (const auto &colorAttachment : configuration.colorAttachments)
+		{
+			VkAttachmentReference reference{};
+			reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-		VkAttachmentDescription colorAttachmentResolve{};
-		colorAttachmentResolve.format = configuration.colorAttachments.at(0).format;
-		colorAttachmentResolve.samples = VK_SAMPLE_COUNT_1_BIT;
-		colorAttachmentResolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		colorAttachmentResolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		colorAttachmentResolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		colorAttachmentResolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		colorAttachmentResolve.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		colorAttachmentResolve.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		attachments.push_back(colorAttachmentResolve);
+			if (colorAttachment.layout == VK_IMAGE_LAYOUT_UNDEFINED)
+			{
+				reference.attachment = VK_ATTACHMENT_UNUSED;
+				colorResolveAttachmentRefs.push_back(reference);
+			}
+			else
+			{
+				reference.attachment = attachment++;
+				colorResolveAttachmentRefs.push_back(reference);
+
+				VkAttachmentDescription resolveDescription{};
+				resolveDescription.format = colorAttachment.format;
+				resolveDescription.samples = VK_SAMPLE_COUNT_1_BIT;
+				resolveDescription.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+				resolveDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+				resolveDescription.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+				resolveDescription.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+				resolveDescription.initialLayout = colorAttachment.layout;
+				resolveDescription.finalLayout = colorAttachment.layout;
+
+				attachments.push_back(resolveDescription);
+			}
+		}
+
+		subPass.pResolveAttachments = colorResolveAttachmentRefs.data();
 	}
 
 	std::array<VkSubpassDependency, 2> dependencies = { beginDependency, endDependency };
@@ -2316,8 +2480,9 @@ VkRenderPass Graphics::createRenderPass(RenderPassConfiguration &configuration)
 	createInfo.pDependencies = dependencies.data();
 
 	VkRenderPass renderPass;
-	if (vkCreateRenderPass(device, &createInfo, nullptr, &renderPass) != VK_SUCCESS)
-		throw love::Exception("failed to create render pass");
+	VkResult result = vkCreateRenderPass(device, &createInfo, nullptr, &renderPass);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan render pass: %s", Vulkan::getErrorString(result));
 
 	return renderPass;
 }
@@ -2516,8 +2681,6 @@ void Graphics::setDefaultRenderPass()
 
 	RenderPassConfiguration renderPassConfiguration{};
 
-	renderPassConfiguration.colorAttachments.push_back({ swapChainImageFormat, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_LOAD, msaaSamples });
-
 	VkFormat dsformat = backbufferHasDepth || backbufferHasStencil ? depthStencilFormat : VK_FORMAT_UNDEFINED;
 	renderPassConfiguration.staticData.depthStencilAttachment = { dsformat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_LOAD, msaaSamples };
 	if (msaaSamples & VK_SAMPLE_COUNT_1_BIT)
@@ -2532,19 +2695,22 @@ void Graphics::setDefaultRenderPass()
 
 	if (msaaSamples & VK_SAMPLE_COUNT_1_BIT)
 	{
+		renderPassConfiguration.colorAttachments.push_back({ swapChainImageFormat, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, msaaSamples });
+
 		if (!swapChainImageViews.empty())
 			framebufferConfiguration.colorViews.push_back(swapChainImageViews.at(imageIndex));
 		else
 			framebufferConfiguration.colorViews.push_back(fakeBackbuffer->getRenderTargetView(0, 0));
-		framebufferConfiguration.staticData.resolveView = VK_NULL_HANDLE;
 	}
 	else
 	{
+		renderPassConfiguration.colorAttachments.push_back({ swapChainImageFormat, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_LOAD, msaaSamples });
+
 		framebufferConfiguration.colorViews.push_back(colorImageView);
 		if (!swapChainImageViews.empty())
-			framebufferConfiguration.staticData.resolveView = swapChainImageViews.at(imageIndex);
+			framebufferConfiguration.colorResolveViews.push_back(swapChainImageViews.at(imageIndex));
 		else
-			framebufferConfiguration.staticData.resolveView = fakeBackbuffer->getRenderTargetView(0, 0);
+			framebufferConfiguration.colorResolveViews.push_back(fakeBackbuffer->getRenderTargetView(0, 0));
 	}
 
 	renderPassState.renderPassConfiguration = std::move(renderPassConfiguration);
@@ -2574,35 +2740,62 @@ void Graphics::setDefaultRenderPass()
 	}
 }
 
-void Graphics::setRenderPass(const RenderTargets &rts, int pixelw, int pixelh, bool hasSRGBtexture)
+void Graphics::setRenderPass(const RenderTargets &rts, int pixelw, int pixelh)
 {
-	// fixme: hasSRGBtexture
 	RenderPassConfiguration renderPassConfiguration{};
+	VkSampleCountFlagBits msaa = VK_SAMPLE_COUNT_1_BIT;
+
 	for (const auto &color : rts.colors)
+	{
+		auto tex = (Texture *)color.texture;
 		renderPassConfiguration.colorAttachments.push_back({ 
-			Vulkan::getTextureFormat(color.texture->getPixelFormat()).internalFormat,
-			((Texture*)color.texture)->getImageLayout(),
+			Vulkan::getTextureFormat(tex->getPixelFormat()).internalFormat,
+			tex->getImageLayout(),
+			tex->getMSAAImageLayout(),
 			VK_ATTACHMENT_LOAD_OP_LOAD,
-			dynamic_cast<Texture*>(color.texture)->getMsaaSamples() });
+			tex->getMsaaSamples() });
+
+		if (tex->getMSAAImageLayout() != VK_IMAGE_LAYOUT_UNDEFINED && tex->getImageLayout() != VK_IMAGE_LAYOUT_UNDEFINED)
+			renderPassConfiguration.staticData.resolve = true;
+
+		msaa = tex->getMsaaSamples();
+	}
+
 	if (rts.depthStencil.texture != nullptr)
+	{
+		auto tex = (Texture *)rts.depthStencil.texture;
 		renderPassConfiguration.staticData.depthStencilAttachment = {
 			Vulkan::getTextureFormat(rts.depthStencil.texture->getPixelFormat()).internalFormat,
-			((Texture*)rts.depthStencil.texture)->getImageLayout(),
+			tex->getImageLayout(),
 			VK_ATTACHMENT_LOAD_OP_LOAD,
 			VK_ATTACHMENT_LOAD_OP_LOAD,
-			dynamic_cast<Texture*>(rts.depthStencil.texture)->getMsaaSamples() };
+			tex->getMsaaSamples() };
+
+		msaa = tex->getMsaaSamples();
+	}
 
 	FramebufferConfiguration configuration{};
 
 	for (const auto &color : rts.colors)
 	{
 		auto tex = (Texture*)color.texture;
-		configuration.colorViews.push_back(tex->getRenderTargetView(color.mipmap, color.slice));
+		if (tex->getMSAA() > 1)
+		{
+			configuration.colorViews.push_back(tex->getMSAARenderTargetView(color.mipmap, color.slice));
+			configuration.colorResolveViews.push_back(tex->getRenderTargetView(color.mipmap, color.slice));
+		}
+		else
+		{
+			configuration.colorViews.push_back(tex->getRenderTargetView(color.mipmap, color.slice));
+		}
 	}
 	if (rts.depthStencil.texture != nullptr)
 	{
 		auto tex = (Texture*)rts.depthStencil.texture;
-		configuration.staticData.depthView = tex->getRenderTargetView(rts.depthStencil.mipmap, rts.depthStencil.slice);
+		if (tex->getMSAA() > 1)
+			configuration.staticData.depthView = tex->getMSAARenderTargetView(rts.depthStencil.mipmap, rts.depthStencil.slice);
+		else
+			configuration.staticData.depthView = tex->getRenderTargetView(rts.depthStencil.mipmap, rts.depthStencil.slice);
 	}
 
 	configuration.staticData.width = static_cast<uint32_t>(pixelw);
@@ -2626,7 +2819,7 @@ void Graphics::setRenderPass(const RenderTargets &rts, int pixelw, int pixelh, b
 	renderPassState.pipeline = VK_NULL_HANDLE;
 	renderPassState.width = static_cast<float>(pixelw);
 	renderPassState.height = static_cast<float>(pixelh);
-	renderPassState.msaa = VK_SAMPLE_COUNT_1_BIT;
+	renderPassState.msaa = msaa;
 	renderPassState.numColorAttachments = static_cast<uint32_t>(rts.colors.size());
 	renderPassState.packedColorAttachmentFormats = 0;
 	for (size_t i = 0; i < rts.colors.size(); i++)
@@ -2682,7 +2875,7 @@ VkSampler Graphics::createSampler(const SamplerState &samplerState)
 	samplerInfo.addressModeU = Vulkan::getWrapMode(samplerState.wrapU);
 	samplerInfo.addressModeV = Vulkan::getWrapMode(samplerState.wrapV);
 	samplerInfo.addressModeW = Vulkan::getWrapMode(samplerState.wrapW);
-	samplerInfo.anisotropyEnable = VK_TRUE;
+	samplerInfo.anisotropyEnable = samplerState.maxAnisotropy > 1 ? VK_TRUE : VK_FALSE;
 	samplerInfo.maxAnisotropy = static_cast<float>(samplerState.maxAnisotropy);
 
 	// TODO: This probably needs to branch on a pixel format to determine whether
@@ -2710,40 +2903,11 @@ VkSampler Graphics::createSampler(const SamplerState &samplerState)
 	samplerInfo.maxLod = static_cast<float>(samplerState.maxLod);
 
 	VkSampler sampler;
-	if (vkCreateSampler(device, &samplerInfo, nullptr, &sampler) != VK_SUCCESS)
-		throw love::Exception("failed to create sampler");
+	VkResult result = vkCreateSampler(device, &samplerInfo, nullptr, &sampler);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan sampler: %s", Vulkan::getErrorString(result));
 
 	return sampler;
-}
-
-template<typename Configuration, typename ObjectHandle, typename ConfigurationHasher, typename Deleter>
-static void eraseUnusedObjects(
-	std::unordered_map<Configuration, ObjectHandle, ConfigurationHasher> &objects,
-	std::unordered_map<ObjectHandle, bool> &usages,
-	Deleter deleter,
-	VkDevice device)
-{
-	std::vector<Configuration> deletionKeys;
-
-	for (const auto &entry : objects)
-	{
-		if (!usages[entry.second])
-		{
-			deletionKeys.push_back(entry.first);
-			usages.erase(entry.second);
-			deleter(device, entry.second, nullptr);
-		}
-		else
-			usages[entry.second] = false;
-	}
-
-	for (const auto &key : deletionKeys)
-		objects.erase(key);
-}
-
-void Graphics::cleanupUnusedObjects()
-{
-	eraseUnusedObjects(framebuffers, framebufferUsages, vkDestroyFramebuffer, device);
 }
 
 void Graphics::requestSwapchainRecreation()
@@ -2765,6 +2929,52 @@ VkSampler Graphics::getCachedSampler(const SamplerState &samplerState)
 		VkSampler sampler = createSampler(samplerState);
 		samplers.insert({ samplerkey, sampler });
 		return sampler;
+	}
+}
+
+static uint64 getDescriptorPoolsKey(int dynamicUniformBuffers, int sampledTextures, int storageTextures, int texelBuffers, int storageBuffers)
+{
+	return (((int64)dynamicUniformBuffers & 0xFF) << 0)
+		| (((int64)sampledTextures & 0xFF) << 8)
+		| (((int64)storageTextures & 0xFF) << 16)
+		| (((int64)texelBuffers    & 0xFF) << 24)
+		| (((int64)storageBuffers  & 0xFF) << 32);
+}
+
+SharedDescriptorPools *Graphics::acquireDescriptorPools(int dynamicUniformBuffers, int sampledTextures, int storageTextures, int texelBuffers, int storageBuffers)
+{
+	uint64 key = getDescriptorPoolsKey(dynamicUniformBuffers, sampledTextures, storageTextures, texelBuffers, storageBuffers);
+
+	auto it = sharedDescriptorPools.find(key);
+	if (it != sharedDescriptorPools.end())
+	{
+		it->second.referenceCount++;
+		return it->second.pools;
+	}
+
+	auto pools = new SharedDescriptorPools(device, dynamicUniformBuffers, sampledTextures, storageTextures, texelBuffers, storageBuffers);
+
+	SharedDescriptorPoolsRef ref{};
+	ref.pools = pools;
+	ref.referenceCount = 1;
+	sharedDescriptorPools[key] = ref;
+
+	return pools;
+}
+
+void Graphics::releaseDescriptorPools(SharedDescriptorPools *p)
+{
+	uint64 key = getDescriptorPoolsKey(p->dynamicUniformBuffers, p->sampledTextures, p->storageTextures, p->texelBuffers, p->storageBuffers);
+
+	auto it = sharedDescriptorPools.find(key);
+	if (it != sharedDescriptorPools.end())
+	{
+		it->second.referenceCount--;
+		if (it->second.referenceCount <= 0)
+		{
+			delete it->second.pools;
+			sharedDescriptorPools.erase(key);
+		}
 	}
 }
 
@@ -2932,8 +3142,9 @@ VkPipeline Graphics::createGraphicsPipeline(Shader *shader, const GraphicsPipeli
 	pipelineInfo.renderPass = configuration.renderPass;
 
 	VkPipeline graphicsPipeline;
-	if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS)
-		throw love::Exception("failed to create graphics pipeline");
+	VkResult result = vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &graphicsPipeline);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan graphics pipeline: %s", Vulkan::getErrorString(result));
 	return graphicsPipeline;
 }
 
@@ -3027,8 +3238,9 @@ void Graphics::createColorResources()
 		allocationInfo.usage = VMA_MEMORY_USAGE_AUTO;
 		allocationInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
-		if (vmaCreateImage(vmaAllocator, &imageInfo, &allocationInfo, &colorImage, &colorImageAllocation, nullptr))
-			throw love::Exception("failed to create color image");
+		VkResult result = vmaCreateImage(vmaAllocator, &imageInfo, &allocationInfo, &colorImage, &colorImageAllocation, nullptr);
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan MSAA color image: %s", Vulkan::getErrorString(result));
 
 		VkImageViewCreateInfo imageViewInfo{};
 		imageViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -3045,8 +3257,9 @@ void Graphics::createColorResources()
 		imageViewInfo.subresourceRange.baseArrayLayer = 0;
 		imageViewInfo.subresourceRange.layerCount = 1;
 
-		if (vkCreateImageView(device, &imageViewInfo, nullptr, &colorImageView) != VK_SUCCESS)
-			throw love::Exception("failed to create color image view");
+		result = vkCreateImageView(device, &imageViewInfo, nullptr, &colorImageView);
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan MSAA color image view: %s", Vulkan::getErrorString(result));
 	}
 }
 
@@ -3102,8 +3315,9 @@ void Graphics::createDepthResources()
 	allocationInfo.usage = VMA_MEMORY_USAGE_AUTO;
 	allocationInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
-	if (vmaCreateImage(vmaAllocator, &imageInfo, &allocationInfo, &depthImage, &depthImageAllocation, nullptr) != VK_SUCCESS)
-		throw love::Exception("failed to create depth image");
+	VkResult result = vmaCreateImage(vmaAllocator, &imageInfo, &allocationInfo, &depthImage, &depthImageAllocation, nullptr);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan backbuffer depth image: %s", Vulkan::getErrorString(result));
 
 	VkImageViewCreateInfo imageViewInfo{};
 	imageViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -3123,8 +3337,9 @@ void Graphics::createDepthResources()
 	imageViewInfo.subresourceRange.baseArrayLayer = 0;
 	imageViewInfo.subresourceRange.layerCount = 1;
 
-	if (vkCreateImageView(device, &imageViewInfo, nullptr, &depthImageView) != VK_SUCCESS)
-		throw love::Exception("failed to create depth image view");
+	result = vkCreateImageView(device, &imageViewInfo, nullptr, &depthImageView);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan backbuffer depth image view: %s", Vulkan::getErrorString(result));
 }
 
 void Graphics::createCommandPool()
@@ -3136,8 +3351,9 @@ void Graphics::createCommandPool()
 	poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value;
 	poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
 
-	if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
-		throw love::Exception("failed to create command pool");
+	VkResult result = vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan command pool: %s", Vulkan::getErrorString(result));
 }
 
 void Graphics::createCommandBuffers()
@@ -3150,8 +3366,9 @@ void Graphics::createCommandBuffers()
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
-	if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
-		throw love::Exception("failed to allocate command buffers");
+	VkResult result = vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data());
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to allocate Vulkan command buffers: %s", Vulkan::getErrorString(result));
 }
 
 void Graphics::createSyncObjects()
@@ -3172,7 +3389,7 @@ void Graphics::createSyncObjects()
 		if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores.at(i)) != VK_SUCCESS ||
 			vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores.at(i)) != VK_SUCCESS ||
 			vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences.at(i)) != VK_SUCCESS)
-			throw love::Exception("failed to create synchronization objects for a frame!");
+			throw love::Exception("Failed to create Vulkan synchronization objects for a frame!");
 }
 
 void Graphics::cleanup()
@@ -3183,14 +3400,22 @@ void Graphics::cleanup()
 	cleanUpFunctions.clear();
 
 	vmaDestroyAllocator(vmaAllocator);
-	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-	{
-		vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-		vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
-		vkDestroyFence(device, inFlightFences[i], nullptr);
-	}
 
-	vkFreeCommandBuffers(device, commandPool, MAX_FRAMES_IN_FLIGHT, commandBuffers.data());
+	for (const auto &s : renderFinishedSemaphores)
+		vkDestroySemaphore(device, s, nullptr);
+	renderFinishedSemaphores.clear();
+
+	for (const auto &s : imageAvailableSemaphores)
+		vkDestroySemaphore(device, s, nullptr);
+	imageAvailableSemaphores.clear();
+
+	for (const auto &f : inFlightFences)
+		vkDestroyFence(device, f, nullptr);
+	inFlightFences.clear();
+
+	if (!commandBuffers.empty())
+		vkFreeCommandBuffers(device, commandPool, (uint32)commandBuffers.size(), commandBuffers.data());
+	commandBuffers.clear();
 
 	for (auto const &p : samplers)
 		vkDestroySampler(device, p.second, nullptr);
@@ -3204,38 +3429,68 @@ void Graphics::cleanup()
 		vkDestroyFramebuffer(device, entry.second, nullptr);
 	framebuffers.clear();
 
-	vkDestroyCommandPool(device, commandPool, nullptr);
-	vkDestroyPipelineCache(device, pipelineCache, nullptr);
-	vkDestroyDevice(device, nullptr);
+	if (commandPool != VK_NULL_HANDLE)
+	{
+		vkDestroyCommandPool(device, commandPool, nullptr);
+		commandPool = VK_NULL_HANDLE;
+	}
+
+	if (pipelineCache != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineCache(device, pipelineCache, nullptr);
+		pipelineCache = VK_NULL_HANDLE;
+	}
+
+	if (device != VK_NULL_HANDLE)
+	{
+		vkDestroyDevice(device, nullptr);
+		device = VK_NULL_HANDLE;
+	}
 }
 
-void Graphics::cleanupSwapChain()
+void Graphics::cleanupSwapChain(bool destroySwapChainObject)
 {
 	if (colorImage)
 	{
+		cleanupFramebuffers(colorImageView, swapChainPixelFormat);
+
 		vkDestroyImageView(device, colorImageView, nullptr);
+		colorImageView = VK_NULL_HANDLE;
+
 		vmaDestroyImage(vmaAllocator, colorImage, colorImageAllocation);
+		colorImage = VK_NULL_HANDLE;
 	}
 	if (depthImage)
 	{
+		cleanupFramebuffers(depthImageView, depthStencilPixelFormat);
+
 		vkDestroyImageView(device, depthImageView, nullptr);
+		depthImageView = VK_NULL_HANDLE;
+
 		vmaDestroyImage(vmaAllocator, depthImage, depthImageAllocation);
+		depthImage = VK_NULL_HANDLE;
 	}
 	for (const auto &swapChainImageView : swapChainImageViews)
+	{
+		cleanupFramebuffers(swapChainImageView, swapChainPixelFormat);
 		vkDestroyImageView(device, swapChainImageView, nullptr);
+	}
 	swapChainImageViews.clear();
-	vkDestroySwapchainKHR(device, swapChain, nullptr);
 	swapChainImages.clear();
 	fakeBackbuffer.set(nullptr);
 
-	swapChain = VK_NULL_HANDLE;
+	if (destroySwapChainObject && swapChain != VK_NULL_HANDLE)
+	{
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
+		swapChain = VK_NULL_HANDLE;
+	}
 }
 
 void Graphics::recreateSwapChain()
 {
 	vkDeviceWaitIdle(device);
 
-	cleanupSwapChain();
+	cleanupSwapChain(false);
 
 	createSwapChain();
 	createImageViews();
@@ -3255,7 +3510,8 @@ love::graphics::Graphics *createInstance()
 	}
 	catch (love::Exception &e)
 	{
-		printf("Cannot create Vulkan renderer: %s\n", e.what());
+		if (isDebugEnabled())
+			printf("Cannot create Vulkan renderer: %s\n", e.what());
 	}
 
 	return instance;

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -69,10 +69,10 @@ private:
 	std::string getDeviceGUID(int64 deviceid) const;
 
 	// Lists of currently connected Joysticks.
-	std::vector<Joystick *> activeSticks;
+	std::vector<love::joystick::Joystick *> activeSticks;
 
 	// Persistent list of all Joysticks which have been connected at some point.
-	std::list<Joystick *> joysticks;
+	std::list<love::joystick::Joystick *> joysticks;
 
 	// Persistent map indicating GUIDs for Gamepads which have been connected or
 	// modified at some point.

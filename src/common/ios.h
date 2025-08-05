@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -41,12 +41,6 @@ namespace ios
  * searched first, and then the app's Documents folder.
  **/
 std::string getLoveInResources(bool &fused);
-
-/**
- * Opens the specified URL with the default program associated with the URL's
- * scheme.
- **/
-bool openURL(const std::string &url);
 
 /**
  * Causes devices with vibration support to vibrate for about 0.5 seconds.

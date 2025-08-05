@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -259,6 +259,7 @@ struct DefaultVertexAttributes
 {
 	float floats[4];
 	int ints[4];
+	float color[4];
 };
 
 Graphics *Graphics::graphicsInstance = nullptr;
@@ -289,7 +290,21 @@ Graphics::Graphics()
 	if (@available(macOS 10.15, iOS 13.0, *))
 	{
 		graphicsInstance = this;
-		device = MTLCreateSystemDefaultDevice();
+#ifdef LOVE_MACOS
+		if (isLowPowerPreferred())
+		{
+			for (id<MTLDevice> dev in MTLCopyAllDevices())
+			{
+				if (dev.isLowPower)
+				{
+					device = dev;
+					break;
+				}
+			}
+		}
+#endif
+		if (device == nil)
+			device = MTLCreateSystemDefaultDevice();
 		if (device == nil)
 			throw love::Exception("Metal is not supported on this system.");
 	}
@@ -338,11 +353,13 @@ Graphics::Graphics()
 		std::vector<Buffer::DataDeclaration> dataformat = {
 			{"floats", DATAFORMAT_FLOAT_VEC4, 0},
 			{"ints", DATAFORMAT_INT32_VEC4, 0},
+			{"color", DATAFORMAT_FLOAT_VEC4, 0}
 		};
 
 		DefaultVertexAttributes defaults = {
 			{0.0f, 0.0f, 0.0f, 1.0f},
 			{0, 0, 0, 1},
+			{1.0f, 1.0f, 1.0f, 1.0f}
 		};
 
 		Buffer::Settings attribsettings(BUFFERUSAGEFLAG_VERTEX, BUFFERDATAUSAGE_STATIC);

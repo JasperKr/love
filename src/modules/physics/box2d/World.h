@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -93,11 +93,10 @@ public:
 	class QueryCallback : public b2QueryCallback
 	{
 	public:
-		QueryCallback(World *world, lua_State *L, int idx);
+		QueryCallback(lua_State *L, int idx);
 		virtual ~QueryCallback();
 		bool ReportFixture(b2Fixture *fixture) override;
 	private:
-		World *world;
 		lua_State *L;
 		int funcidx;
 		int userargs;
@@ -106,11 +105,10 @@ public:
 	class CollectCallback : public b2QueryCallback
 	{
 	public:
-		CollectCallback(World *world, uint16 categoryMask, lua_State *L);
+		CollectCallback(uint16 categoryMask, lua_State *L);
 		virtual ~CollectCallback();
 		bool ReportFixture(b2Fixture *fixture) override;
 	private:
-		World *world;
 		uint16 categoryMask;
 		lua_State *L;
 		int i = 1;
@@ -119,11 +117,10 @@ public:
 	class RayCastCallback : public b2RayCastCallback
 	{
 	public:
-		RayCastCallback(World *world, lua_State *L, int idx);
+		RayCastCallback(lua_State *L, int idx);
 		virtual ~RayCastCallback();
 		float ReportFixture(b2Fixture *fixture, const b2Vec2 &point, const b2Vec2 &normal, float fraction) override;
 	private:
-		World *world;
 		lua_State *L;
 		int funcidx;
 		int userargs;

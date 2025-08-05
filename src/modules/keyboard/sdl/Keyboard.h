@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -26,7 +26,7 @@
 #include "common/EnumMap.h"
 
 // SDL
-#include <SDL_keyboard.h>
+#include <SDL3/SDL_keyboard.h>
 
 #include <map>
 
@@ -56,6 +56,7 @@ public:
 	void setTextInput(bool enable, double x, double y, double w, double h);
 	bool hasTextInput() const;
 	bool hasScreenKeyboard() const;
+	bool isScreenKeyboardVisible() const;
 
 	static bool getConstant(Key in, SDL_Keycode &out);
 	static bool getConstant(SDL_Keycode in, Key &out);
@@ -72,8 +73,8 @@ private:
 	static std::map<Key, SDL_Keycode> keyToSDLKey;
 	static std::map<SDL_Keycode, Key> sdlKeyToKey;
 
-	static EnumMap<Scancode, SDL_Scancode, SDL_NUM_SCANCODES>::Entry scancodeEntries[];
-	static EnumMap<Scancode, SDL_Scancode, SDL_NUM_SCANCODES> scancodes;
+	static EnumMap<Scancode, SDL_Scancode, SDL_SCANCODE_COUNT>::Entry scancodeEntries[];
+	static EnumMap<Scancode, SDL_Scancode, SDL_SCANCODE_COUNT> scancodes;
 
 }; // Keyboard
 

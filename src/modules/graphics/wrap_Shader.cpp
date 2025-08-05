@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -519,7 +519,7 @@ int w_Shader_getBufferFormat(lua_State *L)
 	Shader *shader = luax_checkshader(L, 1);
 	const char *name = luaL_checkstring(L, 2);
 	const std::vector<Buffer::DataDeclaration> *format = shader->getBufferFormat(name);
-	if (name != nullptr)
+	if (format != nullptr)
 	{
 		lua_createtable(L, (int)format->size(), 0);
 

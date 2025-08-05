@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -988,7 +988,7 @@ void Shader::validateDrawState(PrimitiveType primtype, Texture *maintex) const
 	}
 
 	if (!isResourceBaseTypeCompatible(info->dataBaseType, getDataBaseType(maintex->getPixelFormat())))
-		throw love::Exception("Texture's data format base type must match the uniform variable declared in the shader (float, int, or uint).");
+		throw love::Exception("Main texture's data format base type must match the MainTex declaration in the shader (float, int, or uint).");
 
 	if (info->isDepthSampler != maintex->getSamplerState().depthSampleMode.hasValue)
 	{
@@ -1079,9 +1079,9 @@ static DataFormat getDataFormat(glslang::TBasicType basictype, int components, i
 		else if (components == 2)
 			return DATAFORMAT_FLOAT_VEC2;
 		else if (components == 3)
-			return DATAFORMAT_FLOAT_VEC2;
+			return DATAFORMAT_FLOAT_VEC3;
 		else if (components == 4)
-			return DATAFORMAT_FLOAT_VEC2;
+			return DATAFORMAT_FLOAT_VEC4;
 	}
 	else if (basictype == glslang::EbtInt)
 	{
@@ -1090,20 +1090,20 @@ static DataFormat getDataFormat(glslang::TBasicType basictype, int components, i
 		else if (components == 2)
 			return DATAFORMAT_INT32_VEC2;
 		else if (components == 3)
-			return DATAFORMAT_INT32_VEC2;
+			return DATAFORMAT_INT32_VEC3;
 		else if (components == 4)
-			return DATAFORMAT_INT32_VEC2;
+			return DATAFORMAT_INT32_VEC4;
 	}
-	else if (basictype == glslang::EbtUint)
+	else if (basictype == glslang::EbtUint || basictype == glslang::EbtBool)
 	{
 		if (components == 1)
 			return DATAFORMAT_UINT32;
 		else if (components == 2)
 			return DATAFORMAT_UINT32_VEC2;
 		else if (components == 3)
-			return DATAFORMAT_UINT32_VEC2;
+			return DATAFORMAT_UINT32_VEC3;
 		else if (components == 4)
-			return DATAFORMAT_UINT32_VEC2;
+			return DATAFORMAT_UINT32_VEC4;
 	}
 
 	return DATAFORMAT_MAX_ENUM;
@@ -1196,6 +1196,7 @@ static T convertData(const glslang::TConstUnion &data)
 		case glslang::EbtUint8: return (T) data.getU8Const();
 		case glslang::EbtUint16: return (T) data.getU16Const();
 		case glslang::EbtUint64: return (T) data.getU64Const();
+		case glslang::EbtBool: return (T)data.getBConst();
 		default: return 0;
 	}
 }
@@ -1231,7 +1232,7 @@ static bool AddFieldsToFormat(std::vector<Buffer::DataDeclaration> &format, int 
 		DataFormat dataformat = getDataFormat(type->getBasicType(), type->getVectorSize(), type->getMatrixRows(), type->getMatrixCols(), type->isMatrix());
 		if (dataformat == DATAFORMAT_MAX_ENUM)
 		{
-			err = "Shader validation error:\n";
+			err = "Shader validation error:\nUnhandled data format for type " + std::to_string((int)type->getBasicType()) + std::string(" with name ") + basename;
 			return false;
 		}
 
@@ -1252,7 +1253,7 @@ bool Shader::validateInternal(StrongRef<ShaderStage> stages[], std::string &err,
 			program.addShader(stages[i]->getGLSLangValidationShader());
 	}
 
-	if (!program.link((EShMessages)(EshMsgCrossStageIO | EshMsgOverlappingLocations)))
+	if (!program.link((EShMessages)(EShMsgValidateCrossStageIO | EshMsgOverlappingLocations)))
 	{
 		err = "Cannot compile shader:\n\n" + std::string(program.getInfoLog()) + "\n" + std::string(program.getInfoDebugLog());
 		return false;

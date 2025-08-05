@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -20,6 +20,7 @@
 
 // LOVE
 #include "Filesystem.h"
+#include "NativeFile.h"
 #include "common/utf8.h"
 
 // Assume POSIX or Visual Studio.
@@ -65,6 +66,11 @@ void Filesystem::setAndroidSaveExternal(bool useExternal)
 bool Filesystem::isAndroidSaveExternal() const
 { 
 	return useExternal;
+}
+
+File *Filesystem::openNativeFile(const char *path, File::Mode mode) const
+{
+	return new NativeFile(path, mode);
 }
 
 FileData *Filesystem::newFileData(const void *data, size_t size, const char *filename) const

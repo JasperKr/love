@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -208,6 +208,7 @@ void HarfbuzzShaper::computeGlyphPositions(const ColoredCodepoints &codepoints, 
 
 	offset.y += getBaseline();
 	Vector2 curpos = offset;
+	float spacingremainder = 0;
 
 	int colorindex = 0;
 	int ncolors = (int)codepoints.colors.size();
@@ -312,7 +313,11 @@ void HarfbuzzShaper::computeGlyphPositions(const ColoredCodepoints &codepoints, 
 
 			// Account for extra spacing given to space characters.
 			if (clustercodepoint == ' ' && extraspacing != 0.0f)
-				curpos.x += extraspacing;
+			{
+				spacingremainder += fmod(extraspacing, 1);
+				curpos.x += floorf(extraspacing) + floorf(spacingremainder);
+				spacingremainder = fmod(spacingremainder, 1);
+			}
 		}
 	}
 

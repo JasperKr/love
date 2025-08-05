@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -44,6 +44,7 @@ namespace graphics
 {
 
 static bool gammaCorrect = false;
+static bool lowPowerPreferred = false;
 static bool debugMode = false;
 static bool debugModeQueried = false;
 
@@ -115,15 +116,23 @@ namespace vulkan { extern love::graphics::Graphics *createInstance(); }
 
 static const Renderer rendererOrder[] = {
 	RENDERER_METAL,
+#if defined(LOVE_ANDROID) || (defined(LOVE_WINDOWS) && defined(_M_ARM64))
+	// Don't prioritize Vulkan by default yet on Android - it needs more testing.
+	// Also don't prioritize Vulkan on Windows ARM64 because it doesn't work.
+	// See https://github.com/love2d/love/issues/2196
 	RENDERER_OPENGL,
 	RENDERER_VULKAN,
+#else
+	RENDERER_VULKAN,
+	RENDERER_OPENGL,
+#endif
 };
 
 static std::vector<Renderer> defaultRenderers =
 {
 	RENDERER_METAL,
-	RENDERER_OPENGL,
 	RENDERER_VULKAN,
+	RENDERER_OPENGL,
 };
 
 static std::vector<Renderer> _renderers = defaultRenderers;
@@ -141,6 +150,16 @@ const std::vector<Renderer> &getRenderers()
 void setRenderers(const std::vector<Renderer> &renderers)
 {
 	_renderers = renderers;
+}
+
+void setLowPowerPreferred(bool preferred)
+{
+	lowPowerPreferred = preferred;
+}
+
+bool isLowPowerPreferred()
+{
+	return lowPowerPreferred;
 }
 
 Graphics *Graphics::createInstance()
@@ -1121,13 +1140,40 @@ void Graphics::setRenderTargets(const RenderTargets &rts)
 
 		PixelFormat dsformat = PIXELFORMAT_STENCIL8;
 		if (wantsdepth && wantsstencil)
-			dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
-		else if (wantsdepth && isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
-			dsformat = PIXELFORMAT_DEPTH24_UNORM;
+		{
+			if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT_STENCIL8;
+			else
+				throw love::Exception("Combined depth and stencil buffers are not supported on this system.");
+		}
 		else if (wantsdepth)
-			dsformat = PIXELFORMAT_DEPTH16_UNORM;
+		{
+			if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH16_UNORM, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH16_UNORM;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT_STENCIL8;
+			else
+				throw love::Exception("Depth buffers are not supported on this system.");
+		}
 		else if (wantsstencil)
-			dsformat = PIXELFORMAT_STENCIL8;
+		{
+			if (isPixelFormatSupported(PIXELFORMAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT_STENCIL8;
+			else
+				throw love::Exception("Stencil buffers are not supported on this system.");
+		}
 
 		// We want setRenderTargetsInternal to have a pointer to the temporary RT,
 		// but we don't want to directly store it in the main graphics state.
@@ -2907,7 +2953,7 @@ STRINGMAP_CLASS_END(Graphics, Graphics::LineJoin, Graphics::LINE_JOIN_MAX_ENUM, 
 
 STRINGMAP_CLASS_BEGIN(Graphics, Graphics::Feature, Graphics::FEATURE_MAX_ENUM, feature)
 {
-	{ "multirendertargetformats", Graphics::FEATURE_MULTI_RENDER_TARGET_FORMATS },
+	{ "multicanvasformats",       Graphics::FEATURE_MULTI_RENDER_TARGET_FORMATS },
 	{ "clampzero",                Graphics::FEATURE_CLAMP_ZERO           },
 	{ "clampone",                 Graphics::FEATURE_CLAMP_ONE            },
 	{ "lighten",                  Graphics::FEATURE_LIGHTEN              },
@@ -2935,7 +2981,7 @@ STRINGMAP_CLASS_BEGIN(Graphics, Graphics::SystemLimit, Graphics::LIMIT_MAX_ENUM,
 	{ "threadgroupsx",           Graphics::LIMIT_THREADGROUPS_X             },
 	{ "threadgroupsy",           Graphics::LIMIT_THREADGROUPS_Y             },
 	{ "threadgroupsz",           Graphics::LIMIT_THREADGROUPS_Z             },
-	{ "rendertargets",           Graphics::LIMIT_RENDER_TARGETS             },
+	{ "multicanvas",             Graphics::LIMIT_RENDER_TARGETS             },
 	{ "texturemsaa",             Graphics::LIMIT_TEXTURE_MSAA               },
 	{ "anisotropy",              Graphics::LIMIT_ANISOTROPY                 },
 }

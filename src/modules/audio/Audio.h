@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2024 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -281,6 +281,10 @@ public:
 	 * @return true if supported.
 	 */
 	virtual bool isEFXsupported() const = 0;
+
+	virtual bool setOutputSpatialization(bool enable, const char *filter = nullptr) = 0;
+	virtual bool getOutputSpatialization(const char *&filter) const = 0;
+	virtual void getOutputSpatializationFilters(std::vector<std::string> &list) const = 0;
 
 	/**
 	 * Sets whether audio from other apps mixes with love.audio or is muted,
