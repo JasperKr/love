@@ -2490,6 +2490,47 @@ int w_setColor(lua_State *L)
 	return 0;
 }
 
+int w_pushDebugLabel(lua_State *L)
+{
+	luax_checkgraphicscreated(L);
+	const char *label = luaL_checkstring(L, 1);
+	if (label == nullptr || strlen(label) == 0)
+		return luaL_argerror(L, 1, "expected non-empty string");
+
+	// default to red
+	Colorf c = { 1.0f, 0.0f, 0.0f, 1.0f };
+
+	if (lua_istable(L, 2))
+	{
+		for (int i = 1; i <= 4; i++)
+			lua_rawgeti(L, 2, i);
+
+		c.r = (float)luaL_checknumber(L, -4);
+		c.g = (float)luaL_checknumber(L, -3);
+		c.b = (float)luaL_checknumber(L, -2);
+		c.a = (float)luaL_optnumber(L, -1, 1.0);
+
+		lua_pop(L, 4);
+	}
+	else if (lua_gettop(L) >= 4 && lua_isnumber(L, 2) && lua_isnumber(L, 3) && lua_isnumber(L, 4))
+	{
+		c.r = (float)luaL_checknumber(L, 2);
+		c.g = (float)luaL_checknumber(L, 3);
+		c.b = (float)luaL_checknumber(L, 4);
+		c.a = (float)luaL_optnumber(L, 5, 1.0);
+	}
+
+	instance()->pushDebugLabel(label, c);
+	return 0;
+}
+
+int w_popDebugLabel(lua_State *L)
+{
+	luax_checkgraphicscreated(L);
+	instance()->popDebugLabel();
+	return 0;
+}
+
 int w_getColor(lua_State *L)
 {
 	Colorf c = instance()->getColor();
@@ -4054,6 +4095,10 @@ static const luaL_Reg functions[] =
 
 	{ "setColor", w_setColor },
 	{ "getColor", w_getColor },
+
+	{ "pushDebugLabel", w_pushDebugLabel },
+	{ "popDebugLabel", w_popDebugLabel },
+
 	{ "setBackgroundColor", w_setBackgroundColor },
 	{ "getBackgroundColor", w_getBackgroundColor },
 

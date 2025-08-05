@@ -102,6 +102,9 @@ public:
 
 	void setWireframe(bool enable) override;
 
+	void pushDebugLabel(const char *name, Colorf color) override;
+	void popDebugLabel() override;
+
 	bool isPixelFormatSupported(PixelFormat format, uint32 usage) override;
 	Renderer getRenderer() const override;
 	bool usesGLSLES() const override;

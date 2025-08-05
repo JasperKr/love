@@ -1534,6 +1534,24 @@ void Graphics::setWireframe(bool enable)
 	states.back().wireframe = enable;
 }
 
+void Graphics::pushDebugLabel(const char *label, Colorf color)
+{
+	// glPushDebugGroup
+	if (GLAD_VERSION_4_3 || GLAD_KHR_debug)
+		glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, label);
+	else // No debug labels supported.
+		return;
+}
+
+void Graphics::popDebugLabel()
+{
+	// glPopDebugGroup
+	if (GLAD_VERSION_4_3 || GLAD_KHR_debug)
+		glPopDebugGroup();
+	else // No debug labels supported.
+		return;
+}
+
 void *Graphics::getBufferMapMemory(size_t size)
 {
 	// We don't need anything more complicated because get/release calls are

@@ -347,6 +347,25 @@ void Graphics::discard(const std::vector<bool> &colorbuffers, bool depthstencil)
 	startRenderPass();
 }
 
+void Graphics::pushDebugLabel(const char* name, Colorf color)
+{
+	VkDebugUtilsLabelEXT label = { VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
+
+	label.pLabelName = name;
+
+	label.color[0] = color.r;
+	label.color[1] = color.g;
+	label.color[2] = color.b;
+	label.color[3] = color.a;
+
+	vkCmdBeginDebugUtilsLabelEXT(commandBuffers.at(currentFrame), &label);
+}
+
+void Graphics::popDebugLabel()
+{
+	vkCmdEndDebugUtilsLabelEXT(commandBuffers.at(currentFrame));
+}
+
 void Graphics::submitGpuCommands(SubmitMode submitMode, void *screenshotCallbackData)
 {
 	flushBatchedDraws();
@@ -1795,6 +1814,48 @@ static void findOptionalDeviceExtensions(VkPhysicalDevice physicalDevice, Option
 	}
 }
 
+// take an array of strings (device extensions) and check if they are supported by the device
+// output a list of booleans if they are supported or not
+static void findUserRequestedDeviceExtensions(VkPhysicalDevice physicalDevice, std::vector<std::string> requestedExtensions, std::vector<bool>& deviceExtensions)
+{
+	uint32_t extensionCount;
+	vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
+
+	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+	vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, availableExtensions.data());
+
+	for (size_t i = 0; i < requestedExtensions.size(); i++)
+	{
+		std::string extensionName = requestedExtensions[i];
+		const char *extensionNameCStr = extensionName.c_str();
+
+		for (const auto &extension : availableExtensions)
+			if (strcmp(extension.extensionName, extensionNameCStr) == 0)
+			{
+				deviceExtensions[i] = true;
+				break;
+			}
+	}
+}
+
+static void enableUserRequestedDeviceExtensions(VkPhysicalDevice physicalDevice, std::vector<std::string> requestedExtensions, std::vector<std::string> &persistentExtensions, std::vector<const char *>& enabledExtensions)
+{
+	std::vector<bool> &supportedDeviceExtensions = std::vector<bool>(requestedExtensions.size(), false);
+
+	findUserRequestedDeviceExtensions(physicalDevice, requestedExtensions, supportedDeviceExtensions);
+
+	for (size_t i = 0; i < requestedExtensions.size(); i++)
+	{
+		if (!supportedDeviceExtensions[i])
+			throw love::Exception("Vulkan device extension '%s' is not supported by the selected GPU.", requestedExtensions[i].c_str());
+		else
+		{
+			persistentExtensions.push_back(requestedExtensions[i]);
+			enabledExtensions.push_back(persistentExtensions.back().c_str());
+		}
+	}
+}
+
 void Graphics::createLogicalDevice()
 {
 	QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
@@ -1831,7 +1892,17 @@ void Graphics::createLogicalDevice()
 	if (optionalDeviceExtensions.spirv14 && deviceApiVersion < VK_API_VERSION_1_1)
 		optionalDeviceExtensions.spirv14 = false;
 
+	bool userSuppliedFeatures = false;
+	const void *userFeatures = love::graphics::getDeviceFeatures(userSuppliedFeatures);
+
+	if (userSuppliedFeatures && userFeatures == nullptr)
+		throw love::Exception("Vulkan device features pointer cannot be null.");
+
 	VkPhysicalDeviceFeatures deviceFeatures{};
+
+	if (userSuppliedFeatures)
+		deviceFeatures = *static_cast<const VkPhysicalDeviceFeatures *>(userFeatures);
+
 	deviceFeatures.samplerAnisotropy = VK_TRUE;
 	deviceFeatures.fillModeNonSolid = VK_TRUE;
 
@@ -1842,6 +1913,12 @@ void Graphics::createLogicalDevice()
 	createInfo.pEnabledFeatures = &deviceFeatures;
 
 	std::vector<const char*> enabledExtensions(deviceExtensions.begin(), deviceExtensions.end());
+	std::vector<std::string> persistentExtensions;
+
+	const auto &requestedExtensions = love::graphics::getRequestedExtensions();
+
+	enableUserRequestedDeviceExtensions(physicalDevice, requestedExtensions, persistentExtensions, enabledExtensions);
+
 	if (optionalDeviceExtensions.extendedDynamicState)
 		enabledExtensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 	if (optionalDeviceExtensions.memoryRequirements2)
@@ -1859,6 +1936,9 @@ void Graphics::createLogicalDevice()
 
 	createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
 	createInfo.ppEnabledExtensionNames = enabledExtensions.data();
+
+	for (const char *ext : enabledExtensions)
+		std::printf("Using extension: %s\n", ext);
 
 	if (isDebugEnabled())
 	{

@@ -109,6 +109,12 @@ const std::vector<Renderer> &getDefaultRenderers();
 const std::vector<Renderer> &getRenderers();
 void setRenderers(const std::vector<Renderer> &renderers);
 
+void setRequestedExtensions(const std::vector<std::string> &extensions);
+const std::vector<std::string> &getRequestedExtensions();
+
+void setDeviceFeatures(void *deviceFeatures, size_t size);
+const void* getDeviceFeatures(bool &userSetFeatures);
+
 void setLowPowerPreferred(bool preferred);
 bool isLowPowerPreferred();
 
@@ -480,6 +486,9 @@ public:
 	image::ImageData *readbackTexture(Texture *texture, int slice, int mipmap, const Rect &rect, image::ImageData *dest, int destx, int desty);
 	GraphicsReadback *readbackTextureAsync(Texture *texture, int slice, int mipmap, const Rect &rect, image::ImageData *dest, int destx, int desty);
 
+	virtual void pushDebugLabel(const char *name, Colorf color);
+	virtual void popDebugLabel();
+
 	bool validateShader(bool gles, const std::vector<std::string> &stages, const Shader::CompileOptions &options, std::string &err);
 
 	Texture *getDefaultTexture(TextureType type, DataBaseType dataType, bool depthSample);
@@ -699,6 +708,9 @@ public:
 	 * behave the same as regular love.graphics lines.
 	 **/
 	virtual void setWireframe(bool enable) = 0;
+
+	//virtual void pushDebugLabel(const char *name, const Colorf &color) = 0;
+	//virtual void popDebugLabel() = 0;
 
 	/**
 	 * Gets whether wireframe drawing mode is enabled.
