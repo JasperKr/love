@@ -1,3 +1,52 @@
+## Fork Info
+
+I made this Fork since i use löve mostly for graphics programming, this requires some features löve doesn't expose by default.
+
+This fork adds two new functions to the graphics module.
+
+### Debug labels
+
+`love.graphics.pushDebugLabel(name: string, color: number[]?)`
+
+Which also takes separate numbers if preferred.
+
+`love.graphics.pushDebugLabel(name: string, r: number, g: number, b: number, a: number?)`
+
+And:
+
+`love.graphics.popDebugLabel()`
+
+These are labels which show up in profilers like RGP (Radeon GPU Profiler) or debuggers like RenderDoc.
+
+(Do note that these are not guaranteed to use these colors.)
+
+### Shader extensions
+
+Besides these new functions, love.conf has two new settings for the graphics module to allow for better support of shader extensions, 
+
+like `GL_EXT_shader_explicit_arithmetic_types_int16` for example which needs to be enabled explicitly on the cpu side too. 
+
+**This functionality is only available on Vulkan!**
+
+Following the previous int16 arithmetic extension, this can be enabled like so:
+```lua
+function love.conf(t)
+	t.graphics.requestedExtensions = {
+		"VK_KHR_shader_float16_int8"
+	}
+	t.graphics.deviceFeatures.shaderInt16 = 1
+end
+```
+Where requestedExtensions is one of the extensions mentioned here:
+
+https://deepwiki.com/KhronosGroup/Vulkan-Docs/7-vulkan-extensions#5-shader-extensions
+
+And `deviceFeatures` is a pointer to the `VkPhysicalDeviceFeatures` struct.
+See vulkan_core.h Line 3212
+
+---
+
+
 LÖVE is an *awesome* framework you can use to make 2D games in Lua. It's free, open-source, and works on Windows, macOS, Linux, Android, and iOS.
 
 [![Build Status: Github CI](https://github.com/love2d/love/workflows/continuous-integration/badge.svg)](https://github.com/love2d/love/actions?query=workflow%3Acontinuous-integration)
