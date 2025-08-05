@@ -152,6 +152,50 @@ void setRenderers(const std::vector<Renderer> &renderers)
 	_renderers = renderers;
 }
 
+static std::vector<std::string> _requestedExtensions;
+
+void setRequestedExtensions(const std::vector<std::string> &extensions)
+{
+	_requestedExtensions = extensions;
+}
+
+const std::vector<std::string> &getRequestedExtensions()
+{
+	return _requestedExtensions;
+}
+
+static uint8_t *_featuresRaw = nullptr;
+static size_t _featuresSize = 0;
+static bool _featuresSet = false;
+
+void setDeviceFeatures(void *deviceFeatures, size_t size)
+{
+	if (!deviceFeatures || size == 0)
+	{
+		delete[] _featuresRaw;
+		_featuresRaw = nullptr;
+		_featuresSize = 0;
+		_featuresSet = false;
+		return;
+	}
+
+	if (_featuresSize != size)
+	{
+		delete[] _featuresRaw;
+		_featuresRaw = new uint8_t[size];
+		_featuresSize = size;
+	}
+
+	memcpy(_featuresRaw, deviceFeatures, size);
+	_featuresSet = true;
+}
+
+const void *getDeviceFeatures(bool &hasCustomFeatures)
+{
+	hasCustomFeatures = _featuresSet;
+	return _featuresRaw;
+}
+
 void setLowPowerPreferred(bool preferred)
 {
 	lowPowerPreferred = preferred;
@@ -511,6 +555,18 @@ GraphicsReadback *Graphics::readbackTextureAsync(Texture *texture, int slice, in
 	auto readback = newReadbackInternal(READBACK_ASYNC, texture, slice, mipmap, rect, dest, destx, desty);
 	pendingReadbacks.push_back(readback);
 	return readback;
+}
+
+void Graphics::pushDebugLabel(const char *name, Colorf color)
+{
+	// Default implementation - does nothing
+	// Derived classes can override to provide actual debug label functionality
+}
+
+void Graphics::popDebugLabel()
+{
+	// Default implementation - does nothing
+	// Derived classes can override to provide actual debug label functionality
 }
 
 void Graphics::cleanupCachedShaderStage(ShaderStageType type, const std::string &hashkey)

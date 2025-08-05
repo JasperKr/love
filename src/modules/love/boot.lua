@@ -157,6 +157,70 @@ usage:
 end
 
 function love.init()
+	local ffi = require("ffi")
+ffi.cdef [[
+typedef uint32_t VkBool32;
+
+typedef struct VkPhysicalDeviceFeatures {
+    VkBool32    robustBufferAccess;
+    VkBool32    fullDrawIndexUint32;
+    VkBool32    imageCubeArray;
+    VkBool32    independentBlend;
+    VkBool32    geometryShader;
+    VkBool32    tessellationShader;
+    VkBool32    sampleRateShading;
+    VkBool32    dualSrcBlend;
+    VkBool32    logicOp;
+    VkBool32    multiDrawIndirect;
+    VkBool32    drawIndirectFirstInstance;
+    VkBool32    depthClamp;
+    VkBool32    depthBiasClamp;
+    VkBool32    fillModeNonSolid;
+    VkBool32    depthBounds;
+    VkBool32    wideLines;
+    VkBool32    largePoints;
+    VkBool32    alphaToOne;
+    VkBool32    multiViewport;
+    VkBool32    samplerAnisotropy;
+    VkBool32    textureCompressionETC2;
+    VkBool32    textureCompressionASTC_LDR;
+    VkBool32    textureCompressionBC;
+    VkBool32    occlusionQueryPrecise;
+    VkBool32    pipelineStatisticsQuery;
+    VkBool32    vertexPipelineStoresAndAtomics;
+    VkBool32    fragmentStoresAndAtomics;
+    VkBool32    shaderTessellationAndGeometryPointSize;
+    VkBool32    shaderImageGatherExtended;
+    VkBool32    shaderStorageImageExtendedFormats;
+    VkBool32    shaderStorageImageMultisample;
+    VkBool32    shaderStorageImageReadWithoutFormat;
+    VkBool32    shaderStorageImageWriteWithoutFormat;
+    VkBool32    shaderUniformBufferArrayDynamicIndexing;
+    VkBool32    shaderSampledImageArrayDynamicIndexing;
+    VkBool32    shaderStorageBufferArrayDynamicIndexing;
+    VkBool32    shaderStorageImageArrayDynamicIndexing;
+    VkBool32    shaderClipDistance;
+    VkBool32    shaderCullDistance;
+    VkBool32    shaderFloat64;
+    VkBool32    shaderInt64;
+    VkBool32    shaderInt16;
+    VkBool32    shaderResourceResidency;
+    VkBool32    shaderResourceMinLod;
+    VkBool32    sparseBinding;
+    VkBool32    sparseResidencyBuffer;
+    VkBool32    sparseResidencyImage2D;
+    VkBool32    sparseResidencyImage3D;
+    VkBool32    sparseResidency2Samples;
+    VkBool32    sparseResidency4Samples;
+    VkBool32    sparseResidency8Samples;
+    VkBool32    sparseResidency16Samples;
+    VkBool32    sparseResidencyAliased;
+    VkBool32    variableMultisampleRate;
+    VkBool32    inheritedQueries;
+} VkPhysicalDeviceFeatures;
+]]
+	local deviceFeatures = love.data.newByteData(ffi.sizeof("VkPhysicalDeviceFeatures") or error("No size"))
+	local deviceFeaturesPtr = ffi.cast("VkPhysicalDeviceFeatures*", deviceFeatures:getFFIPointer())
 
 	-- Create default configuration settings.
 	-- NOTE: Adding a new module to the modules list
@@ -186,6 +250,8 @@ function love.init()
 			lowpower = false,
 			renderers = nil,
 			excluderenderers = nil,
+			requestedExtensions = {},
+			deviceFeatures = deviceFeaturesPtr,
 		},
 		modules = {
 			data = true,
@@ -222,6 +288,10 @@ function love.init()
 		excluderenderers = nil, -- Moved to t.graphics.
 		trackpadtouch = false,
 	}
+
+	-- Do not remove these two lines
+	--)luastring"--"
+	R"luastring"--(
 
 	-- Console hack, part 1.
 	local openedconsole = false
@@ -310,6 +380,24 @@ function love.init()
 		end
 
 		love._setRenderers(renderers)
+	end
+
+	if love._setRequestedExtensions then
+		local requestedExtensions = {}
+		if type(c.graphics) == "table" and type(c.graphics.requestedExtensions) == "table" then
+			requestedExtensions = c.graphics.requestedExtensions
+		end
+
+		if type(c.requestedExtensions) == "table" then
+			love.markDeprecated(2, "t.requestedExtensions in love.conf", "field", "replaced", "t.graphics.requestedExtensions")
+			requestedExtensions = c.requestedExtensions
+		end
+
+		love._setRequestedExtensions(requestedExtensions)
+	end
+
+	if love._setDeviceFeatures and deviceFeatures then
+		love._setDeviceFeatures(deviceFeatures:getPointer(), deviceFeatures:getSize())
 	end
 
 	if love._setHighDPIAllowed then

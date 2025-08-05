@@ -263,6 +263,8 @@ public:
 	void draw(const DrawCommand &cmd) override;
 	void draw(const DrawIndexedCommand &cmd) override;
 	void drawQuads(int start, int count, VertexAttributesID attributesID, const BufferBindings &buffers, graphics::Texture *texture) override;
+	void pushDebugLabel(const char *name, Colorf color) override;
+	void popDebugLabel() override;
 
 	// internal functions.
 

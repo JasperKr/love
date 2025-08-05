@@ -428,6 +428,43 @@ static int w__setRenderers(lua_State *L)
 	return 0;
 }
 
+static int w__setRequestedExtensions(lua_State *L)
+{
+	std::vector<std::string> extensions{};
+
+#ifdef LOVE_ENABLE_GRAPHICS
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	for (size_t i = 1; i <= love::luax_objlen(L, 1); i++)
+	{
+		lua_rawgeti(L, -1, (int)i);
+		const char *str = luaL_checkstring(L, -1);
+		if (str != nullptr)
+			extensions.push_back(str);
+		lua_pop(L, 1);
+	}
+	love::graphics::setRequestedExtensions(extensions);
+#endif
+	return 0;
+}
+
+static int w__setDeviceFeatures(lua_State *L)
+{
+#ifdef LOVE_ENABLE_GRAPHICS
+	// get the pointer from the lua state
+	void *data = lua_touserdata(L, 1);  // works with ByteData
+	if (!data) return luaL_error(L, "Expected Userdata");
+
+	size_t size = lua_tointeger(L, 2);
+
+	if (size <= 0)
+		return luaL_error(L, "Expected size to be a positive integer.");
+
+	love::graphics::setDeviceFeatures(data, size);
+#endif
+	return 0;
+}
+
 static int w__setLowPowerPreferred(lua_State *L)
 {
 #ifdef LOVE_ENABLE_GRAPHICS
@@ -576,6 +613,12 @@ int luaopen_love(lua_State *L)
 
 	lua_pushcfunction(L, w__setRenderers);
 	lua_setfield(L, -2, "_setRenderers");
+
+	lua_pushcfunction(L, w__setRequestedExtensions);
+	lua_setfield(L, -2, "_setRequestedExtensions");
+
+	lua_pushcfunction(L, w__setDeviceFeatures);
+	lua_setfield(L, -2, "_setDeviceFeatures");
 
 	lua_pushcfunction(L, w__setLowPowerPreferred);
 	lua_setfield(L, -2, "_setLowPowerPreferred");
